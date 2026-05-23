@@ -9,6 +9,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
@@ -22,6 +23,7 @@ from .config import (
     GITHUB_REPOSITORY,
     HTTP_USER_AGENT,
     RELEASE_ASSET_NAME,
+    RELEASE_ASSET_NAMES,
     RELEASES_API_URL,
     RELEASES_PAGE_URL,
 )
@@ -38,6 +40,19 @@ class ReleaseInfo:
 
 class UpdateError(RuntimeError):
     """Raised when the application update workflow cannot continue."""
+
+
+def _platform_key() -> str:
+    if sys.platform.startswith("win"):
+        return "win32"
+    return sys.platform
+
+
+def release_asset_name() -> str:
+    asset_name = RELEASE_ASSET_NAMES.get(_platform_key())
+    if asset_name:
+        return asset_name
+    raise UpdateError("In-app updates are only supported on macOS and Windows.")
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -60,6 +75,7 @@ def is_newer_version(candidate: str, current: str) -> bool:
 
 
 def _latest_release_from_page() -> ReleaseInfo:
+    asset_name = release_asset_name()
     request = urllib.request.Request(
         RELEASES_PAGE_URL,
         headers={"User-Agent": HTTP_USER_AGENT},
@@ -74,7 +90,7 @@ def _latest_release_from_page() -> ReleaseInfo:
 
     tag_name = urllib.parse.unquote(match.group(1))
     encoded_tag = urllib.parse.quote(tag_name, safe="")
-    encoded_asset = urllib.parse.quote(RELEASE_ASSET_NAME, safe="")
+    encoded_asset = urllib.parse.quote(asset_name, safe="")
     asset_url = (
         f"https://github.com/{GITHUB_REPOSITORY}/releases/download/"
         f"{encoded_tag}/{encoded_asset}"
@@ -83,13 +99,14 @@ def _latest_release_from_page() -> ReleaseInfo:
     return ReleaseInfo(
         tag_name=tag_name,
         version=tag_name.lstrip("vV") or APP_VERSION,
-        asset_name=RELEASE_ASSET_NAME,
+        asset_name=asset_name,
         asset_url=asset_url,
         html_url=html_url,
     )
 
 
 def _latest_release_from_api() -> ReleaseInfo:
+    asset_name = release_asset_name()
     request = urllib.request.Request(
         RELEASES_API_URL,
         headers={
@@ -103,11 +120,11 @@ def _latest_release_from_api() -> ReleaseInfo:
 
     assets = payload.get("assets", [])
     asset = next(
-        (item for item in assets if item.get("name") == RELEASE_ASSET_NAME),
+        (item for item in assets if item.get("name") == asset_name),
         None,
     )
     if not asset:
-        raise UpdateError(f"Release asset '{RELEASE_ASSET_NAME}' was not found.")
+        raise UpdateError(f"Release asset '{asset_name}' was not found.")
 
     return ReleaseInfo(
         tag_name=payload.get("tag_name", ""),
@@ -148,12 +165,21 @@ def download_release_asset(release: ReleaseInfo, target_dir: str) -> str:
     return archive_path
 
 
-def extract_app_bundle(archive_path: str, target_dir: str) -> str:
+def _extract_zip(archive_path: str, target_dir: str) -> None:
     os.makedirs(target_dir, exist_ok=True)
-    subprocess.run(
-        ["/usr/bin/ditto", "-x", "-k", archive_path, target_dir],
-        check=True,
-    )
+    if sys.platform == "darwin":
+        subprocess.run(
+            ["/usr/bin/ditto", "-x", "-k", archive_path, target_dir],
+            check=True,
+        )
+        return
+
+    with zipfile.ZipFile(archive_path) as archive:
+        archive.extractall(target_dir)
+
+
+def extract_app_bundle(archive_path: str, target_dir: str) -> str:
+    _extract_zip(archive_path, target_dir)
 
     for root, dirnames, _filenames in os.walk(target_dir):
         for dirname in dirnames:
@@ -163,7 +189,44 @@ def extract_app_bundle(archive_path: str, target_dir: str) -> str:
     raise UpdateError("Downloaded archive did not contain a macOS app bundle.")
 
 
-def current_bundle_path() -> str:
+def extract_windows_executable(archive_path: str, target_dir: str) -> str:
+    _extract_zip(archive_path, target_dir)
+
+    expected_name = Path(DEFAULT_APP_INSTALL_PATH).name.lower()
+    fallback_executable = None
+    for root, _dirnames, filenames in os.walk(target_dir):
+        for filename in filenames:
+            if not filename.lower().endswith(".exe"):
+                continue
+
+            executable_path = os.path.join(root, filename)
+            if filename.lower() == expected_name:
+                return executable_path
+            if fallback_executable is None:
+                fallback_executable = executable_path
+
+    if fallback_executable:
+        return fallback_executable
+
+    raise UpdateError("Downloaded archive did not contain a Windows executable.")
+
+
+def extract_release_artifact(archive_path: str, target_dir: str) -> str:
+    if sys.platform == "darwin":
+        return extract_app_bundle(archive_path, target_dir)
+    if sys.platform.startswith("win"):
+        return extract_windows_executable(archive_path, target_dir)
+
+    raise UpdateError("In-app updates are only supported on macOS and Windows.")
+
+
+def _current_windows_executable_path() -> str:
+    if getattr(sys, "frozen", False):
+        return str(Path(sys.executable).resolve())
+    return DEFAULT_APP_INSTALL_PATH
+
+
+def _current_macos_bundle_path() -> str:
     executable_path = Path(sys.executable).resolve()
     for parent in executable_path.parents:
         if parent.suffix == ".app":
@@ -171,11 +234,18 @@ def current_bundle_path() -> str:
     return DEFAULT_APP_INSTALL_PATH
 
 
+def current_bundle_path() -> str:
+    if sys.platform.startswith("win"):
+        return _current_windows_executable_path()
+
+    return _current_macos_bundle_path()
+
+
 def resolve_install_target() -> str:
-    bundle_path = current_bundle_path()
-    parent_dir = os.path.dirname(bundle_path)
+    install_path = current_bundle_path()
+    parent_dir = os.path.dirname(install_path)
     if os.path.isdir(parent_dir) and os.access(parent_dir, os.W_OK):
-        return bundle_path
+        return install_path
 
     os.makedirs(DEFAULT_INSTALL_DIR, exist_ok=True)
     return DEFAULT_APP_INSTALL_PATH
@@ -185,12 +255,16 @@ def prepare_update(release: ReleaseInfo) -> Tuple[str, str, str]:
     temp_root = tempfile.mkdtemp(prefix="codex-monitor-update-")
     archive_path = download_release_asset(release, temp_root)
     extracted_root = os.path.join(temp_root, "expanded")
-    source_app = extract_app_bundle(archive_path, extracted_root)
+    source_app = extract_release_artifact(archive_path, extracted_root)
     target_app = resolve_install_target()
     return source_app, target_app, temp_root
 
 
-def install_update_and_restart(source_app: str, target_app: str, temp_root: str) -> None:
+def _install_macos_update_and_restart(
+    source_app: str,
+    target_app: str,
+    temp_root: str,
+) -> None:
     script = """
 while kill -0 "$1" >/dev/null 2>&1; do
   sleep 1
@@ -208,3 +282,56 @@ rm -rf "$4"
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _install_windows_update_and_restart(
+    source_app: str,
+    target_app: str,
+    temp_root: str,
+) -> None:
+    script_path = os.path.join(temp_root, "install-update.cmd")
+    script = r"""@echo off
+setlocal
+:wait
+tasklist /FI "PID eq %~1" 2>NUL | find "%~1" >NUL
+if not errorlevel 1 (
+  timeout /T 1 /NOBREAK >NUL
+  goto wait
+)
+if not exist "%~dp2" mkdir "%~dp2"
+copy /Y "%~3" "%~2" >NUL
+start "" "%~2"
+rmdir /S /Q "%~4"
+"""
+    Path(script_path).write_text(script, encoding="utf-8")
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+        subprocess,
+        "DETACHED_PROCESS",
+        0,
+    )
+    subprocess.Popen(
+        [
+            "cmd.exe",
+            "/c",
+            script_path,
+            str(os.getpid()),
+            target_app,
+            source_app,
+            temp_root,
+        ],
+        creationflags=creationflags,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def install_update_and_restart(source_app: str, target_app: str, temp_root: str) -> None:
+    if sys.platform.startswith("win"):
+        _install_windows_update_and_restart(source_app, target_app, temp_root)
+        return
+
+    if sys.platform == "darwin":
+        _install_macos_update_and_restart(source_app, target_app, temp_root)
+        return
+
+    raise UpdateError("In-app updates are only supported on macOS and Windows.")

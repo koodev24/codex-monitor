@@ -1,4 +1,5 @@
 import os
+import sys
 
 from .version import get_app_version
 
@@ -11,11 +12,26 @@ WINDOW_MIN_SIZE = (540, 320)
 UPDATE_CHECK_INTERVAL_SECONDS = 21600
 
 GITHUB_REPOSITORY = "koodev24/codex-monitor"
-RELEASE_ASSET_NAME = "CodexMonitor-macOS.zip"
+RELEASE_ASSET_NAMES = {
+    "darwin": "CodexMonitor-macOS.zip",
+    "win32": "CodexMonitor-Windows.zip",
+}
+_RELEASE_PLATFORM_KEY = "win32" if sys.platform.startswith("win") else sys.platform
+RELEASE_ASSET_NAME = RELEASE_ASSET_NAMES.get(
+    _RELEASE_PLATFORM_KEY,
+    RELEASE_ASSET_NAMES["darwin"],
+)
 RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
-DEFAULT_INSTALL_DIR = os.path.expanduser("~/Applications")
-DEFAULT_APP_INSTALL_PATH = os.path.join(DEFAULT_INSTALL_DIR, f"{APP_NAME}.app")
+DEFAULT_INSTALL_DIR = (
+    os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), APP_NAME)
+    if os.name == "nt"
+    else os.path.expanduser("~/Applications")
+)
+DEFAULT_APP_INSTALL_PATH = os.path.join(
+    DEFAULT_INSTALL_DIR,
+    f"{APP_NAME}.exe" if os.name == "nt" else f"{APP_NAME}.app",
+)
 HTTP_USER_AGENT = f"{APP_NAME}/{APP_VERSION}"
 
 # Automatically resolves to /Users/<your_username>/.codex/auth.json

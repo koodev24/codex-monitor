@@ -1,11 +1,29 @@
 import json
 import ssl
+import sys
 import urllib.request
 
 import certifi
 
 from .config import USAGE_API_URL
 from .models import UsageResponse
+
+
+if sys.platform.startswith("win"):
+    PLATFORM_HEADER = '"Windows"'
+    USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/135.0.0.0 Safari/537.36"
+    )
+else:
+    PLATFORM_HEADER = '"macOS"'
+    USER_AGENT = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/135.0.0.0 Safari/537.36"
+    )
+
 
 BROWSER_LIKE_HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -14,15 +32,11 @@ BROWSER_LIKE_HEADERS = {
     "Referer": "https://chatgpt.com/",
     "Sec-CH-UA": '"Google Chrome";v="135", "Chromium";v="135", "Not.A/Brand";v="8"',
     "Sec-CH-UA-Mobile": "?0",
-    "Sec-CH-UA-Platform": '"macOS"',
+    "Sec-CH-UA-Platform": PLATFORM_HEADER,
     "Sec-Fetch-Dest": "empty",
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-origin",
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/135.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": USER_AGENT,
 }
 
 
