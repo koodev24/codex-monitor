@@ -289,7 +289,7 @@ def _install_windows_update_and_restart(
     target_app: str,
     temp_root: str,
 ) -> None:
-    script_path = os.path.join(temp_root, "install-update.cmd")
+    script_path = os.path.join(tempfile.gettempdir(), f"codex-update-{os.getpid()}.cmd")
     script = r"""@echo off
 setlocal
 :wait
@@ -302,6 +302,7 @@ if not exist "%~dp2" mkdir "%~dp2"
 copy /Y "%~3" "%~2" >NUL
 start "" "%~2"
 rmdir /S /Q "%~4"
+del "%~f0"
 """
     Path(script_path).write_text(script, encoding="utf-8")
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
