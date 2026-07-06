@@ -4,8 +4,13 @@ import urllib.request
 
 import certifi
 
-from .config import AUTH_REFRESH_CLIENT_ID, AUTH_REFRESH_URL, USAGE_API_URL
-from .models import UsageResponse
+from .config import (
+    AUTH_REFRESH_CLIENT_ID,
+    AUTH_REFRESH_URL,
+    RESET_CREDITS_API_URL,
+    USAGE_API_URL,
+)
+from .models import ResetCreditsPayload, UsageResponse
 
 BROWSER_LIKE_HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -27,8 +32,13 @@ BROWSER_LIKE_HEADERS = {
 
 
 class UsageApiClient:
-    def __init__(self, usage_api_url: str = USAGE_API_URL):
+    def __init__(
+        self,
+        usage_api_url: str = USAGE_API_URL,
+        reset_credits_api_url: str = RESET_CREDITS_API_URL,
+    ):
         self.usage_api_url = usage_api_url
+        self.reset_credits_api_url = reset_credits_api_url
 
     def fetch_usage(self, jwt: str) -> UsageResponse:
         request = urllib.request.Request(
@@ -36,6 +46,20 @@ class UsageApiClient:
             headers={
                 **BROWSER_LIKE_HEADERS,
                 "Authorization": f"Bearer {jwt}",
+            },
+        )
+
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(request, context=context, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def fetch_reset_credits(self, jwt: str, account_id: str) -> ResetCreditsPayload:
+        request = urllib.request.Request(
+            self.reset_credits_api_url,
+            headers={
+                **BROWSER_LIKE_HEADERS,
+                "Authorization": f"Bearer {jwt}",
+                "ChatGPT-Account-ID": account_id,
             },
         )
 

@@ -1136,6 +1136,146 @@ class CodexMonitorApp:
             widget = getattr(widget, "master", None)
         return False
 
+    def _reset_credits_tooltip_text(self, email: str) -> str:
+        from .formatters import soonest_expiring_credit, format_reset_time_remaining
+
+        payload = self.state.get_account_resets(email)
+        if not payload:
+            return "Fetch quota to load reset credits"
+        credits = payload.get("credits") if isinstance(payload, dict) else None
+        if not isinstance(credits, list) or not credits:
+            return "No reset credits"
+        soonest = soonest_expiring_credit(payload)
+        if not soonest:
+            return "No available reset credits"
+        remaining = format_reset_time_remaining(soonest.get("expires_at"), time.time())
+        return f"Reset credit expires in {remaining}"
+
+    def _show_reset_credits_modal(self, email: str) -> None:
+        tokens = self._theme_tokens()
+        payload = self.state.get_account_resets(email)
+        from .formatters import (
+            format_reset_credit_expires,
+            format_reset_time_remaining,
+            format_reset_granted_at,
+        )
+        now_ts = datetime.now().timestamp()
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(f"Reset Credits — {email}")
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.configure(fg_color=tokens["card"])
+        dialog.minsize(520, 240)
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(0, weight=1)
+
+        container = ctk.CTkFrame(
+            dialog,
+            corner_radius=14,
+            fg_color=tokens["card"],
+            border_width=1,
+            border_color=tokens["border"],
+        )
+        container.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_rowconfigure(1, weight=1)
+
+        title_label = ctk.CTkLabel(
+            container,
+            text=f"Reset Credits — {email}",
+            anchor="w",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=tokens["text"],
+        )
+        title_label.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 6))
+
+        if payload and isinstance(payload.get("credits"), list) and payload["credits"]:
+            credits = payload["credits"]
+            rows = []
+            for credit in credits:
+                expires_text = format_reset_credit_expires(credit.get("expires_at"), now_ts)
+                remaining_text = format_reset_time_remaining(credit.get("expires_at"), now_ts)
+                granted_text = format_reset_granted_at(credit.get("granted_at"))
+                status_text = credit.get("status", "unknown")
+                rows.append([expires_text, remaining_text, granted_text, status_text])
+
+            table_frame = ctk.CTkScrollableFrame(
+                container,
+                fg_color=tokens["table_shell"],
+                corner_radius=8,
+            )
+            table_frame.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 12))
+            for col in range(4):
+                table_frame.grid_columnconfigure(col, weight=1)
+
+            headers = ["Expires", "Time Remaining", "Granted", "Status"]
+            for col, header in enumerate(headers):
+                header_label = ctk.CTkLabel(
+                    table_frame,
+                    text=header,
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color=tokens["header_fg"],
+                )
+                header_label.grid(row=0, column=col, sticky="ew", padx=6, pady=4)
+
+            for row_idx, row_data in enumerate(rows):
+                for col_idx, cell in enumerate(row_data):
+                    cell_label = ctk.CTkLabel(
+                        table_frame,
+                        text=cell,
+                        font=ctk.CTkFont(size=11),
+                        text_color=tokens["text"],
+                        anchor="w",
+                    )
+                    cell_label.grid(row=row_idx + 1, column=col_idx, sticky="ew", padx=6, pady=2)
+        else:
+            if payload is None:
+                msg = "No reset credits data. Fetch quota first."
+            elif not isinstance(payload.get("credits"), list):
+                msg = "Error fetching reset credits."
+            else:
+                msg = "No reset credits found."
+            msg_label = ctk.CTkLabel(
+                container,
+                text=msg,
+                font=ctk.CTkFont(size=12),
+                text_color=tokens["muted"],
+            )
+            msg_label.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 12))
+
+        buttons = ctk.CTkFrame(container, fg_color="transparent")
+        buttons.grid(row=2, column=0, sticky="e", padx=14, pady=(0, 14))
+
+        close_button = ctk.CTkButton(
+            buttons,
+            text="Close",
+            command=dialog.destroy,
+            corner_radius=8,
+            height=30,
+            width=82,
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        close_button.grid(row=0, column=0)
+
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.update_idletasks()
+
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        dlg_width = dialog.winfo_reqwidth()
+        dlg_height = dialog.winfo_reqheight()
+        x = root_x + max((root_width - dlg_width) // 2, 0)
+        y = root_y + max((root_height - dlg_height) // 2, 0)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.grab_set()
+        dialog.lift()
+
     def _on_global_mousewheel(self, event: tk.Event) -> Optional[str]:
         hovered_widget = self.root.winfo_containing(
             self.root.winfo_pointerx(),
@@ -2564,6 +2704,30 @@ class CodexMonitorApp:
         )
         action_column += 1
 
+        reset_text = self._material_icon_text("history")
+        reset_button = ctk.CTkButton(
+            actions_cell,
+            text=reset_text or "⏱",
+            command=lambda account_email=email: self._show_reset_credits_modal(account_email),
+            corner_radius=self.ROW_BUTTON_RADIUS,
+            height=self.ROW_BUTTON_SIZE,
+            width=self.ROW_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(16),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        reset_button.grid(row=0, column=action_column, sticky="e", padx=(0, 5))
+        self._force_square_button(reset_button, self.ROW_BUTTON_SIZE)
+        self._attach_tooltip(
+            reset_button,
+            self._reset_credits_tooltip_text(email),
+            row_tooltip=True,
+        )
+        action_column += 1
+
         remove_text = self._material_icon_text("delete")
         remove_button = ctk.CTkButton(
             actions_cell,
@@ -3023,6 +3187,7 @@ class CodexMonitorApp:
 
         try:
             snapshot = self.auth_file_service.load_snapshot()
+            self._latest_account_id = snapshot.get("tokens", {}).get("account_id")
             jwt = snapshot.get("tokens", {}).get("access_token")
             if jwt:
                 self._reset_auth_retry_state()
@@ -3105,6 +3270,13 @@ class CodexMonitorApp:
                         f"{expected_email}, but token belongs to {email}."
                     )
                 self._sync_current_auth_backup(email)
+                try:
+                    account_id = response.get("account_id") or getattr(self, "_latest_account_id", None)
+                    if account_id:
+                        reset_payload = self.api_client.fetch_reset_credits(jwt, account_id)
+                        self.state.apply_reset_credits(email, reset_payload)
+                except Exception as exc:
+                    print(f"[Safe Error Log] Failed to fetch reset credits for {email}: {exc}")
                 self.root.after(0, self.refresh_ui)
                 message = f"Successfully updated quota for {email}."
             else:
@@ -3167,6 +3339,13 @@ class CodexMonitorApp:
             )
             if email:
                 self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
+                try:
+                    account_id = response.get("account_id") or getattr(self, "_latest_account_id", None)
+                    if account_id:
+                        reset_payload = self.api_client.fetch_reset_credits(jwt, account_id)
+                        self.state.apply_reset_credits(email, reset_payload)
+                except Exception as exc:
+                    print(f"[Safe Error Log] Failed to fetch reset credits for {email}: {exc}")
                 if email == expected_email:
                     message = f"Successfully updated quota for {email}."
                 else:
