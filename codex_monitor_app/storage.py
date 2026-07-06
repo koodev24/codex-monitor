@@ -249,6 +249,9 @@ class UsageStorage:
         if account_data.get("archived") is True:
             clean_account["archived"] = True
 
+        if "resets" in account_data and isinstance(account_data["resets"], dict):
+            clean_account["resets"] = account_data["resets"]
+
         return clean_account
 
     def _sanitize_rate_limit_window(self, value: object) -> Dict[str, float]:
@@ -340,6 +343,7 @@ class UsageStorage:
             "last_fetched",
             "jwt",
             "archived",
+            "resets",
         }
         return any(field in value for field in known_fields)
 

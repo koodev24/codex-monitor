@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 
 class RateLimitWindow(TypedDict, total=False):
@@ -6,6 +6,21 @@ class RateLimitWindow(TypedDict, total=False):
     limit_window_seconds: int
     reset_after_seconds: int
     reset_at: float
+
+
+class ResetCredit(TypedDict, total=False):
+    reset_type: str
+    status: str
+    granted_at: str
+    expires_at: str
+    redeem_started_at: Optional[str]
+    redeemed_at: Optional[str]
+
+
+class ResetCreditsPayload(TypedDict, total=False):
+    available_count: int
+    total_earned_count: int
+    credits: List[ResetCredit]
 
 
 class AccountUsage(TypedDict, total=False):
@@ -17,6 +32,7 @@ class AccountUsage(TypedDict, total=False):
     weekly_window: RateLimitWindow
     last_fetched: float
     archived: bool
+    resets: Optional[ResetCreditsPayload]
 
 
 class AuthTokens(TypedDict, total=False):

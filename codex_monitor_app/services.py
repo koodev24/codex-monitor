@@ -16,7 +16,13 @@ from .config import (
     AUTO_FETCH_OPTIONS,
     LEGACY_AUTH_ACCOUNTS_DIRS,
 )
-from .models import AuthFileSnapshot, RateLimitWindow, UsageMap, UsageResponse
+from .models import (
+    AuthFileSnapshot,
+    RateLimitWindow,
+    ResetCreditsPayload,
+    UsageMap,
+    UsageResponse,
+)
 from .storage import UsageStorage
 
 
@@ -205,6 +211,23 @@ class MonitorStateService:
             self.session_tokens[email] = jwt
         self.save_data()
         return email
+
+    def apply_reset_credits(
+        self,
+        email: str,
+        payload: ResetCreditsPayload,
+    ) -> None:
+        if not email or email not in self.usage_map:
+            return
+        self.usage_map[email]["resets"] = payload
+        self.save_data()
+
+    def get_account_resets(
+        self, email: Optional[str]
+    ) -> Optional[ResetCreditsPayload]:
+        if not email or email not in self.usage_map:
+            return None
+        return self.usage_map[email].get("resets")
 
     def _sanitize_rate_limit_window(self, value: object) -> RateLimitWindow:
         if not isinstance(value, dict):

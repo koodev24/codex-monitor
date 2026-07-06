@@ -52,6 +52,7 @@ LEGACY_AUTH_ACCOUNTS_DIRS = (
 
 # API URL
 USAGE_API_URL = "https://chatgpt.com/backend-api/wham/usage"
+RESET_CREDITS_API_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 AUTH_REFRESH_URL = "https://auth.openai.com/oauth/token"
 AUTH_REFRESH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 AUTH_REFRESH_INTERVAL_SECONDS = 8 * 24 * 3600
