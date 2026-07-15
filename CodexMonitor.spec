@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+import sys
 
 try:
     from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
@@ -62,13 +63,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
-app = BUNDLE(
-    exe,
-    name='CodexMonitor.app',
-    icon=None,
-    bundle_identifier=None,
-    info_plist={
-        'CFBundleShortVersionString': os.environ.get('CODEX_MONITOR_VERSION', '0.0.0-dev'),
-        'CFBundleVersion': os.environ.get('CODEX_MONITOR_VERSION', '0.0.0-dev'),
-    },
-)
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        exe,
+        name='CodexMonitor.app',
+        icon=None,
+        bundle_identifier=None,
+        info_plist={
+            'CFBundleShortVersionString': os.environ.get('CODEX_MONITOR_VERSION', '0.0.0-dev'),
+            'CFBundleVersion': os.environ.get('CODEX_MONITOR_VERSION', '0.0.0-dev'),
+        },
+    )
