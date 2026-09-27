@@ -1,0 +1,765 @@
+use std::fs;
+use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::api::{ApiError, AuthRefreshClient, UsageApiClient};
+use crate::auth::{AuthFileService, HashMapEmailSnapshots};
+use crate::models::{ResetCreditsPayload, UsageMap, UsageResponse};
+use crate::state::{AUTO_FETCH_OPTIONS, MonitorState, now_secs};
+use crate::storage::UsageStorage;
+use crate::watcher::file_signature;
+
+pub struct AppState {
+    pub inner: Mutex<MonitorState>,
+    pub log_path: PathBuf,
+    pub login: Mutex<Option<LoginSession>>,
+}
+
+pub struct LoginSession {
+    pub home: PathBuf,
+    pub cancel: Arc<AtomicBool>,
+}
+
+#[derive(Serialize)]
+pub struct Snapshot {
+    pub accounts: UsageMap,
+    pub current_email: Option<String>,
+    pub auto_fetch: String,
+    pub auto_fetch_options: Vec<String>,
+    pub sort_column: Option<String>,
+    pub sort_asc: bool,
+    pub show_archived: bool,
+    pub logs_expanded: bool,
+    pub auth_file_exists: bool,
+    pub backup_emails: Vec<String>,
+    pub app_version: String,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind")]
+pub enum AuthOutcome {
+    NoChange,
+    Fetched { email: String, message: String },
+    AuthRefreshed { message: String },
+    LoggedOut { message: String },
+    MissingToken,
+    ParseError { message: String },
+    NoFile,
+}
+
+#[derive(Serialize)]
+pub struct FetchResult {
+    pub email: String,
+    pub message: String,
+}
+
+fn append_log(state: &AppState, message: &str) {
+    if message.is_empty() {
+        return;
+    }
+    if let Some(parent) = state.log_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    use std::fmt::Write as _;
+    let mut line = String::new();
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let _ = writeln!(line, "[{ts}] {message}");
+    use std::io::Write as _;
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&state.log_path) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+fn state_lock<'a>(state: &'a State<AppState>) -> std::sync::MutexGuard<'a, MonitorState> {
+    state.inner.lock().unwrap()
+}
+
+/// Full quota fetch for one token. Mirrors _bg_fetch_single: usage ->
+/// apply -> backup current auth -> reset credits.
+fn fetch_single(
+    st: &mut MonitorState,
+    api: &UsageApiClient,
+    jwt: &str,
+    expected_email: Option<&str>,
+    activate: bool,
+    now: f64,
+) -> Result<(String, Option<String>), String> {
+    let response: UsageResponse =
+        api.fetch_usage(jwt).map_err(|e| e.to_string())?;
+    let email = st
+        .apply_usage_response(&response, jwt.to_string(), now, activate)
+        .ok_or_else(|| "Usage response had no usable account data.".to_string())?;
+    if let Some(expected) = expected_email.filter(|e| !e.is_empty()) {
+        if expected != email {
+            return Err(format!("Account changed during fetch ({expected} -> {email})."));
+        }
+    }
+    if activate {
+        let _ = st.auth.backup_current_auth(&email);
+    }
+    let account_id = response
+        .account_id
+        .clone()
+        .or_else(|| {
+            st.auth
+                .load_snapshot()
+                .ok()
+                .and_then(|s| s.tokens)
+                .and_then(|t| t.account_id)
+        });
+    if let Some(account_id) = account_id {
+        match api.fetch_reset_credits(jwt, &account_id) {
+            Ok(credits) => st.apply_reset_credits(&email, credits),
+            Err(ApiError::Unauthorized) => {}
+            Err(e) => {
+                return Err(format!("Quota fetched, but reset credits failed: {e}"));
+            }
+        }
+    }
+    Ok((email, response.account_id))
+}
+
+fn finalize_logout(st: &mut MonitorState, message: &str) -> AuthOutcome {
+    st.clear_session();
+    st.last_access_token = None;
+    st.last_refresh_marker = None;
+    st.last_signature = None;
+    AuthOutcome::LoggedOut { message: message.into() }
+}
+
+#[tauri::command]
+pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
+    let st = state_lock(&state);
+    Snapshot {
+        accounts: st.usage.clone(),
+        current_email: st.current_email.clone(),
+        auto_fetch: st.auto_fetch.clone(),
+        auto_fetch_options: AUTO_FETCH_OPTIONS.iter().map(|s| s.to_string()).collect(),
+        sort_column: st.sort_column.clone(),
+        sort_asc: st.sort_asc,
+        show_archived: st.show_archived,
+        logs_expanded: st.logs_expanded,
+        auth_file_exists: st.auth.auth_file_exists(),
+        backup_emails: st.auth.list_backup_emails(),
+        app_version: app.package_info().version.to_string(),
+    }
+}
+
+#[tauri::command]
+pub fn manual_fetch(state: State<AppState>) -> Result<FetchResult, String> {
+    let jwt = state_lock(&state).latest_jwt_for(None).ok_or_else(|| "No signed-in account.".to_string())?;
+    let api = UsageApiClient::new();
+    let now = now_secs();
+    let mut st = state_lock(&state);
+    let current = st.current_email.clone();
+    let (email, _) = fetch_single(&mut st, &api, &jwt, current.as_deref(), true, now)?;
+    let message = format!("Fetched quota for {email}.");
+    append_log(&state, &message);
+    Ok(FetchResult { email, message })
+}
+
+#[tauri::command]
+pub fn fetch_backup(state: State<AppState>, email: String) -> Result<FetchResult, String> {
+    let api = UsageApiClient::new();
+    let refresher = AuthRefreshClient::new();
+    let now = now_secs();
+    let mut st = state_lock(&state);
+    let snap = st.auth.load_backup_snapshot(&email)?;
+    let tokens = snap.tokens.clone().ok_or_else(|| "Backup has no tokens.".to_string())?;
+    let mut jwt = tokens.access_token.clone().unwrap_or_default();
+    if jwt.is_empty() {
+        return Err("Backup has no access token.".into());
+    }
+    match fetch_single(&mut st, &api, &jwt, Some(&email), false, now) {
+        Ok((email, _)) => {
+            let message = format!("Fetched quota for {email}.");
+            append_log(&state, &message);
+            Ok(FetchResult { email, message })
+        }
+        Err(_) => {
+            // 401 path: force-refresh the backup token, retry once.
+            let refreshed = st.auth.refresh_backup_if_due(&email, &refresher, true, now)?;
+            jwt = refreshed
+                .tokens
+                .and_then(|t| t.access_token)
+                .unwrap_or_default();
+            if jwt.is_empty() {
+                return Err("Token refresh produced no access token.".into());
+            }
+            let (email, _) = fetch_single(&mut st, &api, &jwt, Some(&email), false, now_secs())?;
+            st.remember_jwt(&email, jwt);
+            let message = format!("Fetched quota for {email} (token refreshed).");
+            append_log(&state, &message);
+            Ok(FetchResult { email, message })
+        }
+    }
+}
+
+/// Read the active auth file and reconcile. Mirrors process_auth_file.
+/// The frontend calls this on watcher events + a 5s poll (replacing the
+/// tkinter after() loop); retry backoff for MissingToken lives there too.
+#[tauri::command]
+pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
+    let api = UsageApiClient::new();
+    let now = now_secs();
+    let mut st = state_lock(&state);
+    if !st.auth.auth_file_exists() {
+        let msg = "Auth file removed. Signed out.".to_string();
+        append_log(&state, &msg);
+        return finalize_logout(&mut st, &msg);
+    }
+    let snapshot = match st.auth.load_snapshot() {
+        Ok(s) => s,
+        Err(e) => return AuthOutcome::ParseError { message: format!("Could not read auth file: {e}") },
+    };
+    let token = snapshot.tokens.clone().and_then(|t| t.access_token).unwrap_or_default();
+    if token.is_empty() {
+        return AuthOutcome::MissingToken;
+    }
+    let marker = snapshot.last_refresh.clone().unwrap_or_default();
+    let refresh_changed = !marker.is_empty() && Some(marker.clone()) != st.last_refresh_marker;
+    let token_changed = Some(token.clone()) != st.last_access_token;
+    st.last_signature = file_signature(&st.auth.auth_file_path.clone());
+    st.last_refresh_marker = snapshot.last_refresh.clone();
+    st.last_access_token = Some(token.clone());
+    st.latest_jwt = Some(token.clone());
+
+    if refresh_changed || (token_changed && st.last_refresh_marker.is_some()) {
+        match fetch_single(&mut st, &api, &token, None, true, now) {
+            Ok((email, _)) => {
+                let message = format!("Detected Codex auth refresh; fetched {email}.");
+                append_log(&state, &message);
+                AuthOutcome::AuthRefreshed { message }
+            }
+            Err(e) => AuthOutcome::ParseError { message: e },
+        }
+    } else if token_changed {
+        match fetch_single(&mut st, &api, &token, None, true, now) {
+            Ok((email, _)) => {
+                let message = format!("Fetched quota for {email}.");
+                append_log(&state, &message);
+                AuthOutcome::Fetched { email, message }
+            }
+            Err(e) => {
+                if matches!(e.as_str(), _ if e.contains("401") || e.contains("expired")) {
+                    let msg = "Session expired. Signed out.".to_string();
+                    append_log(&state, &msg);
+                    finalize_logout(&mut st, &msg)
+                } else {
+                    AuthOutcome::ParseError { message: e }
+                }
+            }
+        }
+    } else {
+        AuthOutcome::NoChange
+    }
+}
+
+#[tauri::command]
+pub fn switch_account(state: State<AppState>, email: String) -> Result<String, String> {
+    let current = state_lock(&state).current_email.clone();
+    {
+        let st = state_lock(&state);
+        st.auth.switch_to_account_backup(&email, current.as_deref())?;
+    }
+    // Fetch fresh quota for the newly activated account.
+    let jwt = state_lock(&state)
+        .auth
+        .load_access_token()
+        .ok_or_else(|| "Activated account has no access token.".to_string())?;
+    let api = UsageApiClient::new();
+    let mut st = state_lock(&state);
+    let (fetched, _) = fetch_single(&mut st, &api, &jwt, Some(&email), true, now_secs())?;
+    let message = format!("Switched to {fetched}.");
+    append_log(&state, &message);
+    Ok(message)
+}
+
+#[tauri::command]
+pub fn remove_account(state: State<AppState>, email: String) -> Result<String, String> {
+    let mut st = state_lock(&state);
+    if !st.remove_account(&email) {
+        return Err(format!("Unknown account {email}."));
+    }
+    st.auth.remove_backup(&email);
+    let message = format!("Removed {email}.");
+    append_log(&state, &message);
+    Ok(message)
+}
+
+#[tauri::command]
+pub fn set_archived(state: State<AppState>, email: String, archived: bool) -> Result<String, String> {
+    let mut st = state_lock(&state);
+    if !st.set_archived(&email, archived) {
+        return Err(format!("Unknown account {email}."));
+    }
+    let message =
+        if archived { format!("Archived {email}.") } else { format!("Unarchived {email}.") };
+    append_log(&state, &message);
+    Ok(message)
+}
+
+#[tauri::command]
+pub fn save_auto_fetch(state: State<AppState>, value: String) -> Result<String, String> {
+    let mut st = state_lock(&state);
+    if !st.save_auto_fetch(&value) {
+        return Err("No active account to configure.".into());
+    }
+    let message = format!("Auto-fetch set to {}.", st.auto_fetch);
+    append_log(&state, &message);
+    Ok(message)
+}
+
+#[tauri::command]
+pub fn save_sort(state: State<AppState>, column: Option<String>, asc: bool) -> Result<(), String> {
+    state_lock(&state).save_sort(column, asc);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_show_archived(state: State<AppState>, show: bool) -> Result<(), String> {
+    state_lock(&state).save_show_archived(show);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_logs_expanded(state: State<AppState>, expanded: bool) -> Result<(), String> {
+    state_lock(&state).save_logs_expanded(expanded);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_resets(state: State<AppState>, email: String) -> Option<ResetCreditsPayload> {
+    state_lock(&state).usage.get(&email).and_then(|a| a.resets.clone())
+}
+
+#[tauri::command]
+pub fn get_logs(state: State<AppState>) -> Vec<String> {
+    fs::read_to_string(&state.log_path)
+        .unwrap_or_default()
+        .lines()
+        .rev()
+        .take(500)
+        .map(String::from)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+#[tauri::command]
+pub fn clear_logs(state: State<AppState>) -> Result<(), String> {
+    fs::write(&state.log_path, "").map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn export_data(state: State<AppState>, path: String) -> Result<String, String> {
+    let st = state_lock(&state);
+    let payload = st.storage.export_data(&st.usage);
+    let backups: HashMapEmailSnapshots = st.auth.export_backups(&[]);
+    let combined = serde_json::json!({
+        "schema_version": 2,
+        "accounts": payload["accounts"],
+        "config": payload["config"],
+        "backups": backups,
+    });
+    fs::write(&path, serde_json::to_string_pretty(&combined).unwrap()).map_err(|e| e.to_string())?;
+    Ok(format!("Exported to {path}."))
+}
+
+#[tauri::command]
+pub fn import_data(state: State<AppState>, path: String) -> Result<String, String> {
+    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let payload: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("Import file is not valid JSON: {e}"))?;
+    let mut st = state_lock(&state);
+    let merged = st.storage.import_data(&payload)?;
+    if let Some(backups) = payload.get("backups").and_then(|v| v.as_object()) {
+        let typed: HashMapEmailSnapshots = backups
+            .iter()
+            .filter_map(|(k, v)| serde_json::from_value(v.clone()).ok().map(|s| (k.clone(), s)))
+            .collect();
+        st.auth.import_backups(&typed);
+    }
+    // Re-read merged state (import_data already saved through storage).
+    st.usage = merged;
+    st.current_email = st
+        .storage
+        .get_meta_value("current_account_email")
+        .and_then(|v| v.as_str().map(String::from))
+        .filter(|e| st.usage.contains_key(e));
+    st.session_tokens.clear();
+    st.latest_jwt = None;
+    let message = format!("Imported {} account(s).", st.usage.len());
+    append_log(&state, &message);
+    Ok(message)
+}
+
+#[tauri::command]
+pub fn logout(state: State<AppState>) -> Result<String, String> {
+    let mut st = state_lock(&state);
+    st.clear_session();
+    let message = "Signed out.".to_string();
+    append_log(&state, &message);
+    Ok(message)
+}
+
+fn augmented_path_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for extra in [
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/opt/homebrew/bin"),
+            home.join(".local/bin"),
+            home.join(".bun/bin"),
+            home.join(".volta/bin"),
+            home.join(".npm-global/bin"),
+            home.join("bin"),
+        ] {
+            if !dirs.contains(&extra) {
+                dirs.push(extra);
+            }
+        }
+    }
+    dirs
+}
+
+/// Locate the `codex` CLI. GUI apps on macOS do not inherit the shell
+/// PATH, so well-known install roots are scanned explicitly.
+/// Mirrors _find_codex_binary (minus the PyInstaller-bundle branches,
+/// which do not exist in the Tauri build).
+pub fn find_codex_binary() -> Option<PathBuf> {
+    if let Ok(env_bin) = std::env::var("CODEX_MONITOR_CODEX_BIN") {
+        let p = PathBuf::from(&env_bin);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let names: &[&str] = if cfg!(windows) { &["codex.exe", "codex.cmd"] } else { &["codex"] };
+    for dir in augmented_path_dirs() {
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(md) = fs::metadata(&candidate) {
+                        if md.permissions().mode() & 0o111 == 0 {
+                            let _ = fs::set_permissions(&candidate, fs::Permissions::from_mode(0o755));
+                        }
+                    }
+                }
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for ch in chars.by_ref() {
+                    if ch.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if c == '\r' {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[tauri::command]
+pub fn check_auto_fetch(state: State<AppState>) -> Result<Option<FetchResult>, String> {
+    let api = UsageApiClient::new();
+    let now = now_secs();
+    let mut st = state_lock(&state);
+    let Some(jwt) = st.due_auto_fetch_jwt(now) else { return Ok(None) };
+    let current = st.current_email.clone();
+    match fetch_single(&mut st, &api, &jwt, current.as_deref(), true, now) {
+        Ok((email, _)) => {
+            let message = format!("Auto-fetched quota for {email}.");
+            append_log(&state, &message);
+            Ok(Some(FetchResult { email, message }))
+        }
+        Err(e) => {
+            append_log(&state, &format!("Auto-fetch failed: {e}"));
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, String> {
+    if state.login.lock().unwrap().is_some() {
+        return Err("A login is already in progress.".into());
+    }
+    let codex_bin = find_codex_binary().ok_or_else(|| {
+        "Could not find the `codex` CLI. Install it (npm i -g @openai/codex) or set CODEX_MONITOR_CODEX_BIN.".to_string()
+    })?;
+    let home = {
+        let st = state_lock(&state);
+        st.auth.create_login_codex_home()?
+    };
+    let mut cmd = if cfg!(windows) && codex_bin.extension().map(|e| e == "cmd").unwrap_or(false) {
+        let mut c = Command::new("cmd");
+        c.args(["/c", &codex_bin.to_string_lossy(), "login"]);
+        c
+    } else {
+        let mut c = Command::new(&codex_bin);
+        c.arg("login");
+        c
+    };
+    cmd.env("CODEX_HOME", &home).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to start login: {e}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.login.lock().unwrap() =
+        Some(LoginSession { home: home.clone(), cancel: cancel.clone() });
+
+    let app_out = app.clone();
+    let mut streams: Vec<Box<dyn Read + Send>> = Vec::new();
+    if let Some(s) = stdout {
+        streams.push(Box::new(s));
+    }
+    if let Some(s) = stderr {
+        streams.push(Box::new(s));
+    }
+    for stream in streams {
+        let app_c = app_out.clone();
+        let cancel_c = cancel.clone();
+        thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                let clean = strip_ansi(&line);
+                if clean.trim().is_empty() {
+                    continue;
+                }
+                let _ = app_c.emit("codex-login-output", clean.clone());
+                if clean.contains("http") {
+                    let _ = app_c.emit("codex-login-url", clean.clone());
+                }
+                if cancel_c.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+        });
+    }
+
+    let state_c = app.clone();
+    thread::spawn(move || {
+        let state_c: State<AppState> = state_c.state();
+        let exit_ok = loop {
+            if cancel.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                let _ = child.wait();
+                finish_login(&app_out, &state_c, &home, LoginEnd::Cancelled);
+                return;
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status.success(),
+                Ok(None) => thread::sleep(std::time::Duration::from_millis(200)),
+                Err(_) => break false,
+            }
+        };
+        state_c.login.lock().unwrap().take();
+        if exit_ok {
+            finish_login(&app_out, &state_c, &home, LoginEnd::Exited);
+        } else {
+            finish_login(&app_out, &state_c, &home, LoginEnd::Failed);
+        }
+    });
+    append_log(&state, "Started Codex login.");
+    Ok("Login started. Complete the flow in the dialog.".into())
+}
+
+enum LoginEnd {
+    Exited,
+    Failed,
+    Cancelled,
+}
+
+fn finish_login(app: &AppHandle, state: &State<AppState>, home: &Path, end: LoginEnd) {
+    let api = UsageApiClient::new();
+    let done = |ok: bool, message: String| {
+        let st = state_lock(state);
+        st.auth.remove_login_codex_home(Some(home));
+        drop(st);
+        append_log(state, &message);
+        let _ = app.emit("codex-login-done", serde_json::json!({"ok": ok, "message": message}));
+    };
+    match end {
+        LoginEnd::Cancelled => {
+            done(false, "Login cancelled.".into());
+            return;
+        }
+        LoginEnd::Failed => {
+            done(false, "Login process exited without success.".into());
+            return;
+        }
+        LoginEnd::Exited => {}
+    }
+    let isolated_path = {
+        let st = state_lock(state);
+        st.auth.active_auth_path_for_home(home)
+    };
+    let snapshot = {
+        let st = state_lock(state);
+        st.auth.load_snapshot_from_path(&isolated_path)
+    };
+    let jwt = match snapshot {
+        Ok(s) => s.tokens.and_then(|t| t.access_token).filter(|t| !t.is_empty()),
+        Err(e) => {
+            done(false, format!("Login produced an unreadable auth file: {e}"));
+            return;
+        }
+    };
+    let Some(jwt) = jwt else {
+        done(false, "Login produced no access token.".into());
+        return;
+    };
+    let response: UsageResponse = match api.fetch_usage(&jwt) {
+        Ok(r) => r,
+        Err(e) => {
+            done(false, format!("Login succeeded but quota fetch failed: {e}"));
+            return;
+        }
+    };
+    let mut st = state_lock(state);
+    let email = match st.apply_usage_response(&response, jwt.clone(), now_secs(), false) {
+        Some(e) => e,
+        None => {
+            drop(st);
+            done(false, "Login produced no usable account.".into());
+            return;
+        }
+    };
+    if let Some(current) = st.current_email.clone() {
+        if current != email {
+            let _ = st.auth.backup_current_auth(&current);
+        }
+    }
+    let source = st.auth.active_auth_path_for_home(home);
+    if let Err(e) = st.auth.activate_auth_from_path(&source) {
+        drop(st);
+        done(false, format!("Could not activate the new account: {e}"));
+        return;
+    }
+    st.set_current(email.clone(), jwt);
+    if let Some(account_id) = response.account_id.clone() {
+        let jwt = st.latest_jwt_for(Some(&email)).unwrap_or_default();
+        if let Ok(credits) = api.fetch_reset_credits(&jwt, &account_id) {
+            st.apply_reset_credits(&email, credits);
+        }
+    }
+    drop(st);
+    done(true, format!("Signed in as {email}."));
+}
+
+#[tauri::command]
+pub fn login_cancel(app: AppHandle, state: State<AppState>) -> Result<String, String> {
+    let guard = state.login.lock().unwrap();
+    if guard.is_none() {
+        return Err("No login in progress.".into());
+    }
+    guard.as_ref().unwrap().cancel.store(true, Ordering::SeqCst);
+    drop(guard);
+    append_log(&state, "Login cancel requested.");
+    let _ = app.emit("codex-login-output", "Cancelling…".to_string());
+    Ok("Cancelling login…".into())
+}
+
+#[tauri::command]
+pub fn restart_codex() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let quit = Command::new("osascript")
+            .args(["-e", "tell application \"Codex\" to quit"])
+            .output();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let open = Command::new("open").args(["-a", "Codex"]).status();
+        match (quit, open) {
+            (_, Ok(s)) if s.success() => Ok("Restarted the Codex app.".into()),
+            _ => Err("Could not restart the Codex app.".into()),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Restarting the Codex app is only supported on macOS.".into())
+    }
+}
+
+/// Migrate legacy store files once, then seed state. Called from setup.
+pub fn build_monitor_state() -> (MonitorState, PathBuf) {
+    let storage = UsageStorage::with_defaults();
+    let auth = AuthFileService::with_defaults();
+    let log_path = storage
+        .storage_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("activity.log");
+    let mut storage = storage;
+    #[cfg(feature = "legacy-migrate")]
+    {
+        crate::legacy::migrate_legacy_account_dirs(&auth.accounts_dir);
+        let _ = crate::legacy::migrate_if_needed(&mut storage);
+    }
+    // Legacy activity log moves next to the v2 store (mirrors _migrate_legacy_log_file).
+    if !log_path.exists() {
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            let legacy = home.join(".codex_usage_store.log");
+            if legacy.is_file() {
+                let _ = fs::copy(&legacy, &log_path);
+            }
+        }
+    }
+    let state = MonitorState::load(storage, auth);
+    (state, log_path)
+}
+
+pub fn all_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool {
+    tauri::generate_handler![
+        get_snapshot,
+        manual_fetch,
+        fetch_backup,
+        check_auto_fetch,
+        process_auth_file,
+        switch_account,
+        remove_account,
+        set_archived,
+        save_auto_fetch,
+        save_sort,
+        save_show_archived,
+        save_logs_expanded,
+        get_resets,
+        get_logs,
+        clear_logs,
+        export_data,
+        import_data,
+        logout,
+        login_start,
+        login_cancel,
+        restart_codex,
+    ]
+}

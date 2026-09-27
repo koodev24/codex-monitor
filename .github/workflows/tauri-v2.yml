@@ -1,0 +1,92 @@
+name: Build and Release Tauri v2 App
+
+# v2 line ships on v2* tags (e.g. v2.0.0). The legacy PyInstaller workflow
+# ignores those tags (see tags-ignore there) so the two lines never race.
+on:
+  push:
+    branches:
+      - tauri-rewrite
+    tags:
+      - 'v2*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: ''
+          - os: windows-latest
+            args: ''
+          - os: ubuntu-22.04
+            args: ''
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Resolve App Version from tag
+        if: startsWith(github.ref, 'refs/tags/v2')
+        working-directory: apps/desktop
+        run: node ../../scripts/set-version.mjs "${{ github.ref_name }}"
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Typecheck + unit tests (frontend shape)
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Rust tests + clippy
+        working-directory: apps/desktop/src-tauri
+        run: |
+          cargo test
+          cargo clippy --all-targets -- -D warnings
+
+      - name: Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: 'CodexMonitor __VERSION__'
+          releaseBody: 'See the assets below to download the latest version.'
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

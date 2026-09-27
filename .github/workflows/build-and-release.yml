@@ -6,6 +6,8 @@ on:
       - main
     tags:
       - 'v*'
+    tags-ignore:
+      - 'v2*'
   workflow_dispatch:
 
 permissions:
