@@ -97,6 +97,7 @@ import {
   pollOnce,
   runConfirmAction,
   saveAutoFetchValue,
+  setLoadError,
   toggleArchivedVisibility,
   type SortKey,
 } from "./store/snapshotSlice";
@@ -166,6 +167,7 @@ export default function App() {
   const dispatch = useAppDispatch();
   const snap = useAppSelector((s) => s.snapshot.snap);
   const initialized = useAppSelector((s) => s.snapshot.initialized);
+  const loadError = useAppSelector((s) => s.snapshot.loadError);
   const sortKey = useAppSelector((s) => s.snapshot.sortKey);
   const sortAsc = useAppSelector((s) => s.snapshot.sortAsc);
   const status = useAppSelector((s) => s.ui.status);
@@ -186,6 +188,15 @@ export default function App() {
   const { dark, toggle } = useTheme();
 
   useEffect(() => {
+    if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+      dispatch(
+        setLoadError(
+          "Not running inside Tauri (no backend bridge). Run `npm run tauri dev`, not `npm run dev`.",
+        ),
+      );
+      dispatch(setStatus("Not running inside Tauri."));
+      return;
+    }
     void dispatch(loadSnapshot()).then(() => void dispatch(pollOnce()));
     const id = window.setInterval(() => {
       void dispatch(pollOnce());
@@ -281,9 +292,27 @@ export default function App() {
             <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {!initialized ? (
-                  <div className="flex h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
-                    <Spin /> Loading accounts…
-                  </div>
+                  loadError ? (
+                    <div className="flex h-48 flex-col items-center justify-center gap-3 px-6 text-center">
+                      <p className="text-sm font-bold">Could not start the app</p>
+                      <p className="max-w-md text-xs text-muted-foreground" title={loadError}>
+                        {loadError}
+                      </p>
+                      <Button
+                        onClick={() => {
+                          dispatch(setLoadError(null));
+                          void dispatch(loadSnapshot()).then(() => void dispatch(pollOnce()));
+                        }}
+                      >
+                        <RefreshCw />
+                        Retry
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
+                      <Spin /> Loading accounts…
+                    </div>
+                  )
                 ) : rows.length === 0 ? (
                   <div className="flex h-48 flex-col items-center justify-center gap-3 text-muted-foreground">
                     <p className="text-sm">

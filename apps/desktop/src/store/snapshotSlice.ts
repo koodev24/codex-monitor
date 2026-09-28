@@ -13,6 +13,7 @@ interface SnapshotState {
   sortKey: SortKey | null;
   sortAsc: boolean;
   authRetries: number;
+  loadError: string | null;
 }
 
 const initialState: SnapshotState = {
@@ -21,6 +22,7 @@ const initialState: SnapshotState = {
   sortKey: null,
   sortAsc: true,
   authRetries: 0,
+  loadError: null,
 };
 
 const MISSING_TOKEN_RETRIES = 6;
@@ -35,12 +37,20 @@ function sortFromColumn(col: string | null): SortKey | null {
 export const loadSnapshot = createAsyncThunk<void, void, { state: RootState }>(
   "snapshot/load",
   async (_, { dispatch }) => {
-    try {
-      const s = await api.snapshot();
-      dispatch(setSnapshot(s));
-    } catch (e) {
-      dispatch(setStatus(`Failed to load state: ${e}`));
+    let lastError = "unknown error";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const s = await api.snapshot();
+        dispatch(setSnapshot(s));
+        dispatch(setLoadError(null));
+        return;
+      } catch (e) {
+        lastError = `${e}`;
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 800));
+      }
     }
+    dispatch(setLoadError(lastError));
+    dispatch(setStatus(`Failed to load state: ${lastError}`));
   },
 );
 
@@ -267,8 +277,11 @@ const snapshotSlice = createSlice({
     setAuthRetries(state, action: { payload: number }) {
       state.authRetries = action.payload;
     },
+    setLoadError(state, action: { payload: string | null }) {
+      state.loadError = action.payload;
+    },
   },
 });
 
-export const { setSnapshot, setSortView, setAuthRetries } = snapshotSlice.actions;
+export const { setSnapshot, setSortView, setAuthRetries, setLoadError } = snapshotSlice.actions;
 export default snapshotSlice.reducer;

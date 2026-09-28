@@ -822,8 +822,7 @@ pub fn restart_codex() -> Result<String, String> {
 }
 
 /// Migrate legacy store files once, then seed state. Called from setup.
-pub fn build_monitor_state() -> (MonitorState, PathBuf) {
-    let storage = UsageStorage::with_defaults();
+pub fn build_monitor_state() -> (MonitorState, PathBuf) {    let storage = UsageStorage::with_defaults();
     let auth = AuthFileService::with_defaults();
     let log_path = storage
         .storage_path
@@ -886,4 +885,31 @@ pub fn all_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool {
         login_cancel,
         restart_codex,
     ]
+}
+
+#[cfg(test)]
+mod real_store_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_serializes_against_real_default_store() {
+        let storage = UsageStorage::with_defaults();
+        let auth = AuthFileService::with_defaults();
+        let st = MonitorState::load(storage, auth);
+        let snap = Snapshot {
+            accounts: st.usage.clone(),
+            current_email: st.current_email.clone(),
+            auto_fetch: st.auto_fetch.clone(),
+            auto_fetch_options: vec![],
+            sort_column: st.sort_column.clone(),
+            sort_asc: st.sort_asc,
+            show_archived: st.show_archived,
+            logs_expanded: st.logs_expanded,
+            auth_file_exists: st.auth.auth_file_exists(),
+            backup_emails: st.auth.list_backup_emails(),
+            app_version: "test".into(),
+        };
+        let text = serde_json::to_string(&snap).expect("snapshot must serialize");
+        assert!(text.contains("accounts"));
+    }
 }
