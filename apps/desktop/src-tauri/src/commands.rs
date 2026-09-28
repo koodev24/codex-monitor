@@ -159,6 +159,7 @@ fn finalize_logout(st: &mut MonitorState, message: &str) -> AuthOutcome {
 
 #[tauri::command]
 pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
+    eprintln!("[backend] get_snapshot");
     let st = state_lock(&state);
     Snapshot {
         accounts: st.usage.clone(),
@@ -858,6 +859,7 @@ pub fn build_monitor_state() -> (MonitorState, PathBuf) {    let storage = Usage
         }
     }
     let state = MonitorState::load(storage, auth);
+    eprintln!("[backend] ready: {} account(s), current={:?}", state.usage.len(), state.current_email);
     (state, log_path)
 }
 
