@@ -6,6 +6,64 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
+  Archive,
+  ArchiveRestore,
+  ArrowDownToLine,
+  ArrowLeftRight,
+  Check,
+  Coins,
+  Copy,
+  Download,
+  Eraser,
+  Eye,
+  EyeOff,
+  Moon,
+  RefreshCw,
+  ScrollText,
+  Sun,
+  Trash2,
+  Upload,
+  UserPlus,
+} from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   formatCreditExpires,
   formatGrantedAt,
   formatQuotaLeft,
@@ -40,6 +98,33 @@ function useTheme() {
     localStorage.setItem("cm-theme", dark ? "dark" : "light");
   }, [dark]);
   return { dark, toggle: () => setDark((d) => !d) };
+}
+
+function IconBtn({
+  title,
+  onClick,
+  disabled,
+  variant = "ghost",
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  variant?: "ghost" | "outline" | "default" | "destructive" | "secondary";
+  children: React.ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button variant={variant} size="icon" onClick={onClick} disabled={disabled} aria-label={title}>
+            {children}
+          </Button>
+        }
+      />
+      <TooltipContent>{title}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 export default function App() {
@@ -341,230 +426,326 @@ export default function App() {
   const soonest = resetsEmail && snap ? soonestExpiringCredit(snap.accounts[resetsEmail]?.resets) : undefined;
 
   return (
-    <div className="flex h-screen flex-col bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-      <div className="m-2 flex-1 overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        <div className="grid grid-cols-[5fr_2fr_5fr_3fr] items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold dark:border-slate-800 dark:bg-slate-800/60">
-          <button className="text-left hover:text-blue-600" onClick={() => onHeader("email")} title="Sort by email">
-            Account Email{arrow("email")}
-          </button>
-          <button className="text-left hover:text-blue-600" onClick={() => onHeader("quota")} title="Sort by quota">
-            Quota{arrow("quota")}
-          </button>
-          <button className="text-left hover:text-blue-600" onClick={() => onHeader("reset")} title="Sort by reset">
-            Reset{arrow("reset")}
-          </button>
-          <span className="text-right">Action</span>
-        </div>
-        <div className="h-full overflow-y-auto pb-10">
-          {rows.length === 0 && (
-            <div className="flex h-48 flex-col items-center justify-center gap-3 text-slate-500">
-              <p>{snap && !snap.auth_file_exists ? "Not signed in — the Codex auth file is missing." : "No accounts yet. Fetch quota or add an account."}</p>
-              <button onClick={startLogin} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-500" title="Add account via Codex login">
-                Add account
-              </button>
-            </div>
-          )}
-          {rows.map(([email, a]) => {
-            const isCurrent = email === snap?.current_email;
-            const weekly = weeklyOf(a);
-            return (
-              <div
-                key={email}
-                className={`grid grid-cols-[5fr_2fr_5fr_3fr] items-center gap-2 border-b border-slate-100 px-3 py-2 text-sm odd:bg-slate-50/60 dark:border-slate-800 dark:odd:bg-slate-800/30 ${isCurrent ? "bg-emerald-50 dark:bg-emerald-950/40" : ""}`}
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate font-medium" title={email}>{email}</span>
-                  {isCurrent && (
-                    <span className="shrink-0 rounded-full border border-emerald-500 px-1.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300" title="Active account">
-                      current
-                    </span>
-                  )}
-                  {a.archived && <span className="shrink-0 text-[10px] text-slate-400" title="Archived">arch</span>}
-                </div>
-                <div title={weekly ? `Used ${weekly.used_percent ?? "?"}%` : "Fetch quota first"}>
-                  {formatQuotaLeft(usedOf(a))}
-                </div>
-                <div className="truncate" title={formatResetDisplay(resetTsOf(a), now)}>
-                  {formatResetDisplay(resetTsOf(a), now)}
-                </div>
-                <div className="flex justify-end gap-1">
-                  <button onClick={() => void doFetch(isCurrent ? undefined : email)} disabled={busy} className="rounded-md bg-blue-600 px-2 py-1 text-xs font-bold text-white hover:bg-blue-500 disabled:opacity-50" title={isCurrent ? "Fetch quota" : "Fetch this backup account"}>
-                    Fetch
-                  </button>
-                  <button onClick={() => void openResets(email)} className="rounded-md bg-slate-200 px-2 py-1 text-xs dark:bg-slate-700" title="Reset credits">
-                    Credits
-                  </button>
-                  {!isCurrent && (
-                    <button onClick={() => setConfirm({ kind: "switch", email })} disabled={busy} className="rounded-md bg-slate-200 px-2 py-1 text-xs dark:bg-slate-700" title="Switch to this account">
-                      Switch
-                    </button>
-                  )}
-                  <button onClick={() => setConfirm({ kind: "archive", email, archived: !!a.archived })} className="rounded-md bg-slate-200 px-2 py-1 text-xs dark:bg-slate-700" title={a.archived ? "Unarchive" : "Archive"}>
-                    {a.archived ? "Unarch" : "Arch"}
-                  </button>
-                  <button onClick={() => setConfirm({ kind: "remove", email })} className="rounded-md bg-red-100 px-2 py-1 text-xs text-red-700 dark:bg-red-950 dark:text-red-300" title="Remove account">
-                    Del
-                  </button>
-                </div>
+    <TooltipProvider>
+      <div className="flex h-screen flex-col gap-2 bg-background p-2 text-foreground">
+        <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
+          <ResizablePanel defaultSize={62} minSize={25}>
+            <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {rows.length === 0 ? (
+                  <div className="flex h-48 flex-col items-center justify-center gap-3 text-muted-foreground">
+                    <p className="text-sm">
+                      {snap && !snap.auth_file_exists
+                        ? "Not signed in — the Codex auth file is missing."
+                        : "No accounts yet. Fetch quota or add an account."}
+                    </p>
+                    <Button onClick={startLogin}>
+                      <UserPlus />
+                      Add account
+                    </Button>
+                  </div>
+                ) : (
+                  <Table>
+                    <TableHeader className="sticky top-0 bg-muted">
+                      <TableRow>
+                        <TableHead>
+                          <button className="font-bold hover:text-primary" onClick={() => onHeader("email")}>
+                            Account Email{arrow("email")}
+                          </button>
+                        </TableHead>
+                        <TableHead>
+                          <button className="font-bold hover:text-primary" onClick={() => onHeader("quota")}>
+                            Quota{arrow("quota")}
+                          </button>
+                        </TableHead>
+                        <TableHead>
+                          <button className="font-bold hover:text-primary" onClick={() => onHeader("reset")}>
+                            Reset{arrow("reset")}
+                          </button>
+                        </TableHead>
+                        <TableHead className="text-right">Action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {rows.map(([email, a]) => {
+                        const isCurrent = email === snap?.current_email;
+                        const weekly = weeklyOf(a);
+                        return (
+                          <TableRow key={email} className={isCurrent ? "bg-emerald-500/10" : undefined}>
+                            <TableCell>
+                              <span className="flex min-w-0 items-center gap-2">
+                                <span className="truncate font-medium" title={email}>
+                                  {email}
+                                </span>
+                                {isCurrent && <Badge variant="outline">current</Badge>}
+                                {a.archived && <Badge variant="secondary">arch</Badge>}
+                              </span>
+                            </TableCell>
+                            <TableCell title={weekly ? `Used ${weekly.used_percent ?? "?"}%` : "Fetch quota first"}>
+                              {formatQuotaLeft(usedOf(a))}
+                            </TableCell>
+                            <TableCell className="max-w-56 truncate" title={formatResetDisplay(resetTsOf(a), now)}>
+                              {formatResetDisplay(resetTsOf(a), now)}
+                            </TableCell>
+                            <TableCell>
+                              <span className="flex justify-end gap-0.5">
+                                <IconBtn
+                                  title={isCurrent ? "Fetch quota" : "Fetch this backup account"}
+                                  onClick={() => void doFetch(isCurrent ? undefined : email)}
+                                  disabled={busy}
+                                >
+                                  <RefreshCw />
+                                </IconBtn>
+                                <IconBtn title="Reset credits" onClick={() => void openResets(email)}>
+                                  <Coins />
+                                </IconBtn>
+                                {!isCurrent && (
+                                  <IconBtn
+                                    title="Switch to this account"
+                                    onClick={() => setConfirm({ kind: "switch", email })}
+                                    disabled={busy}
+                                  >
+                                    <ArrowLeftRight />
+                                  </IconBtn>
+                                )}
+                                <IconBtn
+                                  title={a.archived ? "Unarchive account" : "Archive account"}
+                                  onClick={() => setConfirm({ kind: "archive", email, archived: !!a.archived })}
+                                >
+                                  {a.archived ? <ArchiveRestore /> : <Archive />}
+                                </IconBtn>
+                                <IconBtn title="Remove account" onClick={() => setConfirm({ kind: "remove", email })}>
+                                  <Trash2 />
+                                </IconBtn>
+                              </span>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                )}
               </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="mx-2 mb-2 rounded-2xl border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="min-w-0 flex-1 truncate px-2 text-xs text-slate-500" title={status}>{status}</span>
-          <button onClick={() => { void navigator.clipboard.writeText(status); }} className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-blue-500" title="Copy status">⧉</button>
-          <button onClick={() => void toggleLogs()} className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-blue-500" title={logsOpen ? "Hide logs" : "Show logs"}>Logs</button>
-          {logsOpen && (
-            <button onClick={() => { void api.clearLogs().then(() => setLogs([])); }} className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-blue-500" title="Clear logs">Clear</button>
-          )}
-          <button onClick={() => void doExport()} className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-blue-500" title="Export data">Export</button>
-          <button onClick={() => void doImport()} className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-blue-500" title="Import data">Import</button>
-          <button onClick={startLogin} className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-blue-500" title="Add account">+Login</button>
-          <label className="flex items-center gap-1 text-xs text-slate-500" title="Auto-fetch interval for the active account">
-            Auto
-            <select
-              value={snap?.auto_fetch ?? "None"}
-              onChange={(e) => { void api.saveAutoFetch(e.target.value).then((m) => { setStatus(m); void refresh(); }).catch((err) => setStatus(`Auto-fetch failed: ${err}`)); }}
-              className="rounded-lg bg-blue-600 px-1.5 py-1.5 text-xs font-bold text-white"
-            >
-              {(snap?.auto_fetch_options ?? ["None"]).map((o) => (
-                <option key={o} value={o}>{o}</option>
-              ))}
-            </select>
-          </label>
-          <button onClick={() => void doFetch()} disabled={busy} className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-blue-500 disabled:opacity-50" title="Fetch quota now">Fetch</button>
-          <button
-            onClick={() => {
-              const next = !(snap?.show_archived ?? false);
-              void api.saveShowArchived(next).then(() => void refresh());
-            }}
-            className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-blue-500"
-            title={snap?.show_archived ? "Hide archived accounts" : "Show archived accounts"}
-          >
-            Arch
-          </button>
-          <button onClick={() => void checkUpdates(true)} disabled={checkingUpdate} className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-blue-500 disabled:opacity-50" title="Check for updates">
-            {checkingUpdate ? "…" : "Check"}
-          </button>
-          {updateReady && (
-            <button onClick={() => void installUpdate()} className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-500" title={updateReady}>
-              Update
-            </button>
-          )}
-          <button onClick={toggle} className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-blue-500" title="Toggle theme">
-            {dark ? "☀" : "☾"}
-          </button>
-        </div>
-        {logsOpen && (
-          <pre className="mt-2 max-h-32 overflow-y-auto rounded-lg bg-slate-50 p-2 text-[11px] text-slate-500 dark:bg-slate-800/60">
-            {logs.length === 0 ? "(no log entries)" : logs.join("\n")}
-          </pre>
-        )}
-      </div>
-
-      {confirm && (
-        <Modal title="Confirm" onClose={() => setConfirm(null)}>
-          <p className="text-sm">
-            {confirm.kind === "remove" && `Remove ${confirm.email}? Quota history is deleted.`}
-            {confirm.kind === "archive" && `${confirm.archived ? "Unarchive" : "Archive"} ${confirm.email}?`}
-            {confirm.kind === "switch" && `Switch the active Codex account to ${confirm.email}?`}
-          </p>
-          <div className="mt-4 flex justify-end gap-2">
-            <button onClick={() => setConfirm(null)} className="rounded-lg bg-slate-200 px-3 py-1.5 text-sm dark:bg-slate-700">Cancel</button>
-            <button onClick={() => void doConfirm()} disabled={busy} className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-bold text-white disabled:opacity-50">Confirm</button>
-          </div>
-        </Modal>
-      )}
-
-      {resetsEmail && (
-        <Modal title={`Reset Credits — ${resetsEmail}`} onClose={() => { setResetsEmail(null); setResets(null); }}>
-          {!resets?.credits?.length ? (
-            <p className="text-sm text-slate-500">No reset credits found. Fetch quota first.</p>
-          ) : (
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="text-xs text-slate-500">
-                  <th className="py-1">Expires</th>
-                  <th>Remaining</th>
-                  <th>Granted</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {resets.credits.map((c, i) => (
-                  <tr key={i} className="border-t border-slate-100 dark:border-slate-800">
-                    <td className="py-1">{formatCreditExpires(c.expires_at, now)}</td>
-                    <td>{formatTimeRemaining(c.expires_at, now)}</td>
-                    <td>{formatGrantedAt(c.granted_at)}</td>
-                    <td>{c.status ?? "unknown"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {soonest && (
-            <p className="mt-2 text-xs text-slate-500" title="Soonest expiring available credit">
-              Soonest expiry in {formatTimeRemaining(soonest.expires_at, now)}.
-            </p>
-          )}
-        </Modal>
-      )}
-
-      {loginOpen && (
-        <Modal title="Add account — Codex login" onClose={() => { if (!loginDone) void api.loginCancel(); setLoginOpen(false); }}>
-          <pre className="max-h-56 min-h-24 overflow-y-auto rounded-lg bg-slate-950 p-2 text-xs text-slate-200">
-            {loginLines.length === 0 ? "Starting login…" : loginLines.join("\n")}
-          </pre>
-          {loginDone ? (
-            <div className="mt-3 flex justify-end">
-              <button onClick={() => setLoginOpen(false)} className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-bold text-white">Close</button>
             </div>
-          ) : (
-            <div className="mt-3 flex justify-end">
-              <button onClick={() => { void api.loginCancel(); }} className="rounded-lg bg-slate-200 px-3 py-1.5 text-sm dark:bg-slate-700">Cancel</button>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          <ResizablePanel defaultSize={38} minSize={18}>
+            <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-2">
+              <p className="truncate px-1 text-xs text-muted-foreground" title={status}>
+                {status}
+              </p>
+              <div className="flex flex-wrap items-center gap-1">
+                <IconBtn title="Copy status" onClick={() => void navigator.clipboard.writeText(status)}>
+                  <Copy />
+                </IconBtn>
+                <IconBtn title={logsOpen ? "Hide logs" : "Show logs"} onClick={() => void toggleLogs()}>
+                  <ScrollText />
+                </IconBtn>
+                {logsOpen && (
+                  <IconBtn
+                    title="Clear logs"
+                    onClick={() => {
+                      void api.clearLogs().then(() => setLogs([]));
+                    }}
+                  >
+                    <Eraser />
+                  </IconBtn>
+                )}
+                <IconBtn title="Export data" onClick={() => void doExport()}>
+                  <Download />
+                </IconBtn>
+                <IconBtn title="Import data" onClick={() => void doImport()}>
+                  <Upload />
+                </IconBtn>
+                <IconBtn title="Add account via Codex login" onClick={startLogin}>
+                  <UserPlus />
+                </IconBtn>
+                <span className="flex items-center gap-1.5 pl-1">
+                  <Label htmlFor="auto-fetch" className="text-xs text-muted-foreground">
+                    Auto
+                  </Label>
+                  <Select
+                    value={snap?.auto_fetch ?? "None"}
+                    onValueChange={(v) => {
+                      const val = v ?? "None";
+                      void api
+                        .saveAutoFetch(val)
+                        .then((m) => {
+                          setStatus(m);
+                          void refresh();
+                        })
+                        .catch((err) => setStatus(`Auto-fetch failed: ${err}`));
+                    }}
+                  >
+                    <SelectTrigger id="auto-fetch" className="h-8 w-24" title="Auto-fetch interval for the active account">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(snap?.auto_fetch_options ?? ["None"]).map((o) => (
+                        <SelectItem key={o} value={o}>
+                          {o}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </span>
+                <IconBtn title="Fetch quota now" onClick={() => void doFetch()} disabled={busy}>
+                  <RefreshCw />
+                </IconBtn>
+                <IconBtn
+                  title={snap?.show_archived ? "Hide archived accounts" : "Show archived accounts"}
+                  onClick={() => {
+                    const next = !(snap?.show_archived ?? false);
+                    void api.saveShowArchived(next).then(() => void refresh());
+                  }}
+                >
+                  {snap?.show_archived ? <EyeOff /> : <Eye />}
+                </IconBtn>
+                <IconBtn
+                  title="Check for updates"
+                  onClick={() => void checkUpdates(true)}
+                  disabled={checkingUpdate}
+                >
+                  <Check />
+                </IconBtn>
+                {updateReady && (
+                  <IconBtn title={updateReady} onClick={() => void installUpdate()}>
+                    <ArrowDownToLine />
+                  </IconBtn>
+                )}
+                <IconBtn title="Toggle theme" onClick={toggle}>
+                  {dark ? <Sun /> : <Moon />}
+                </IconBtn>
+              </div>
+              {logsOpen && (
+                <ScrollArea className="min-h-40 flex-1 rounded-md border bg-muted/30">
+                  <pre className="whitespace-pre-wrap p-2 text-xs text-muted-foreground">
+                    {logs.length === 0 ? "(no log entries yet)" : logs.join("\n")}
+                  </pre>
+                </ScrollArea>
+              )}
             </div>
-          )}
-        </Modal>
-      )}
+          </ResizablePanel>
+        </ResizablePanelGroup>
 
-      {switchInfo && (
-        <Modal title="Switched account" onClose={() => setSwitchInfo(null)}>
-          <p className="text-sm">Now using {switchInfo}. Restart the Codex app so it picks up the new auth?</p>
-          <div className="mt-4 flex justify-end gap-2">
-            <button onClick={() => setSwitchInfo(null)} className="rounded-lg bg-slate-200 px-3 py-1.5 text-sm dark:bg-slate-700">Later</button>
-            <button
-              onClick={() => { void api.restartCodex().then((m) => setStatus(m)).catch((e) => setStatus(`Restart failed: ${e}`)); setSwitchInfo(null); }}
-              className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-bold text-white"
-            >
-              Restart Codex
-            </button>
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
-}
+        <Dialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Confirm</DialogTitle>
+              <DialogDescription>
+                {confirm?.kind === "remove" && `Remove ${confirm.email}? Quota history is deleted.`}
+                {confirm?.kind === "archive" &&
+                  `${confirm.archived ? "Unarchive" : "Archive"} ${confirm.email}?`}
+                {confirm?.kind === "switch" && `Switch the active Codex account to ${confirm.email}?`}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setConfirm(null)}>
+                Cancel
+              </Button>
+              <Button onClick={() => void doConfirm()} disabled={busy}>
+                Confirm
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
-function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [onClose]);
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div
-        className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="mb-2 text-base font-bold">{title}</h2>
-        {children}
+        <Dialog open={resetsEmail !== null} onOpenChange={(o) => !o && (setResetsEmail(null), setResets(null))}>
+          <DialogContent className="max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Reset Credits — {resetsEmail}</DialogTitle>
+            </DialogHeader>
+            {!resets?.credits?.length ? (
+              <p className="text-sm text-muted-foreground">No reset credits found. Fetch quota first.</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Expires</TableHead>
+                    <TableHead>Remaining</TableHead>
+                    <TableHead>Granted</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {resets.credits.map((c, i) => (
+                    <TableRow key={i}>
+                      <TableCell>{formatCreditExpires(c.expires_at, now)}</TableCell>
+                      <TableCell>{formatTimeRemaining(c.expires_at, now)}</TableCell>
+                      <TableCell>{formatGrantedAt(c.granted_at)}</TableCell>
+                      <TableCell>{c.status ?? "unknown"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+            {soonest && (
+              <p className="text-xs text-muted-foreground" title="Soonest expiring available credit">
+                Soonest expiry in {formatTimeRemaining(soonest.expires_at, now)}.
+              </p>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={loginOpen}
+          onOpenChange={(o) => {
+            if (!o) {
+              if (!loginDone) void api.loginCancel();
+              setLoginOpen(false);
+            }
+          }}
+        >
+          <DialogContent className="max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Add account — Codex login</DialogTitle>
+            </DialogHeader>
+            <ScrollArea className="h-56 rounded-md border bg-slate-950">
+              <pre className="whitespace-pre-wrap p-2 text-xs text-slate-200">
+                {loginLines.length === 0 ? "Starting login…" : loginLines.join("\n")}
+              </pre>
+            </ScrollArea>
+            <DialogFooter>
+              {loginDone ? (
+                <Button onClick={() => setLoginOpen(false)}>Close</Button>
+              ) : (
+                <Button variant="outline" onClick={() => void api.loginCancel()}>
+                  Cancel
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={switchInfo !== null} onOpenChange={(o) => !o && setSwitchInfo(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Switched account</DialogTitle>
+              <DialogDescription>
+                Now using {switchInfo}. Restart the Codex app so it picks up the new auth?
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setSwitchInfo(null)}>
+                Later
+              </Button>
+              <Button
+                onClick={() => {
+                  void api
+                    .restartCodex()
+                    .then((m) => setStatus(m))
+                    .catch((e) => setStatus(`Restart failed: ${e}`));
+                  setSwitchInfo(null);
+                }}
+              >
+                Restart Codex
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }
