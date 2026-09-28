@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { sendNotification } from "@tauri-apps/plugin-notification";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Archive,
   ArchiveRestore,
@@ -17,6 +14,8 @@ import {
   Eraser,
   Eye,
   EyeOff,
+  Loader2,
+  LogOut,
   Moon,
   RefreshCw,
   ScrollText,
@@ -74,18 +73,43 @@ import {
   usedOf,
   weeklyOf,
   type AccountUsage,
-  type ResetCreditsPayload,
 } from "./lib/format";
-import { api, type AuthOutcome, type Snapshot } from "./lib/tauri";
-
-type SortKey = "email" | "quota" | "reset";
-type ConfirmAction =
-  | { kind: "remove"; email: string }
-  | { kind: "archive"; email: string; archived: boolean }
-  | { kind: "switch"; email: string }
-  | null;
-
-const MISSING_TOKEN_RETRIES = 6;
+import { api } from "./lib/tauri";
+import { useAppDispatch, useAppSelector } from "./store/hooks";
+import {
+  appendLines,
+  cancelLogin,
+  markUrlOpened,
+  resetLines,
+  setDone,
+  setOpen as setLoginOpen,
+  startLogin,
+} from "./store/loginSlice";
+import { clearLogs, refreshLogs, toggleLogs } from "./store/logsSlice";
+import {
+  cycleSort,
+  doExport,
+  doImport,
+  loadSnapshot,
+  logout,
+  manualFetch,
+  openResets,
+  pollOnce,
+  runConfirmAction,
+  saveAutoFetchValue,
+  toggleArchivedVisibility,
+  type SortKey,
+} from "./store/snapshotSlice";
+import {
+  checkUpdates,
+  installUpdate,
+  selectAnyBusy,
+  selectBusy,
+  setConfirm,
+  setResetsView,
+  setStatus,
+  setSwitchInfo,
+} from "./store/uiSlice";
 
 function useTheme() {
   const [dark, setDark] = useState(() => {
@@ -100,200 +124,109 @@ function useTheme() {
   return { dark, toggle: () => setDark((d) => !d) };
 }
 
+function Spin({ className }: { className?: string }) {
+  return <Loader2 className={`animate-spin ${className ?? ""}`} />;
+}
+
 function IconBtn({
   title,
   onClick,
-  disabled,
+  busyKey,
   variant = "ghost",
   children,
 }: {
   title: string;
   onClick: () => void;
-  disabled?: boolean;
+  busyKey?: string;
   variant?: "ghost" | "outline" | "default" | "destructive" | "secondary";
   children: React.ReactNode;
 }) {
+  const busy = useAppSelector((s) => (busyKey ? !!s.ui.busy[busyKey] : false));
   return (
     <Tooltip>
       <TooltipTrigger
         render={
-          <Button variant={variant} size="icon" onClick={onClick} disabled={disabled} aria-label={title}>
-            {children}
+          <Button
+            variant={variant}
+            size="icon"
+            onClick={onClick}
+            disabled={busy}
+            aria-label={busy ? `${title} (working…)` : title}
+          >
+            {busy ? <Spin /> : children}
           </Button>
         }
       />
-      <TooltipContent>{title}</TooltipContent>
+      <TooltipContent>{busy ? `${title} (working…)` : title}</TooltipContent>
     </Tooltip>
   );
 }
 
 export default function App() {
-  const [snap, setSnap] = useState<Snapshot | null>(null);
-  const [status, setStatus] = useState("Starting…");
-  const [busy, setBusy] = useState(false);
-  const [sortKey, setSortKey] = useState<SortKey | null>(null);
-  const [sortAsc, setSortAsc] = useState(true);
-  const [confirm, setConfirm] = useState<ConfirmAction>(null);
-  const [resetsEmail, setResetsEmail] = useState<string | null>(null);
-  const [resets, setResets] = useState<ResetCreditsPayload | null>(null);
-  const [logsOpen, setLogsOpen] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [loginOpen, setLoginOpen] = useState(false);
-  const [loginLines, setLoginLines] = useState<string[]>([]);
-  const [loginDone, setLoginDone] = useState<string | null>(null);
-  const [updateReady, setUpdateReady] = useState<string | null>(null);
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [switchInfo, setSwitchInfo] = useState<string | null>(null);
+  const dispatch = useAppDispatch();
+  const snap = useAppSelector((s) => s.snapshot.snap);
+  const initialized = useAppSelector((s) => s.snapshot.initialized);
+  const sortKey = useAppSelector((s) => s.snapshot.sortKey);
+  const sortAsc = useAppSelector((s) => s.snapshot.sortAsc);
+  const status = useAppSelector((s) => s.ui.status);
+  const anyBusy = useAppSelector(selectAnyBusy);
+  const confirm = useAppSelector((s) => s.ui.confirm);
+  const resetsEmail = useAppSelector((s) => s.ui.resetsEmail);
+  const resets = useAppSelector((s) => s.ui.resets);
+  const switchInfo = useAppSelector((s) => s.ui.switchInfo);
+  const updateReady = useAppSelector((s) => s.ui.updateReady);
+  const updateProgress = useAppSelector((s) => s.ui.updateProgress);
+  const logsOpen = useAppSelector((s) => s.logs.open);
+  const logs = useAppSelector((s) => s.logs.entries);
+  const loginOpen = useAppSelector((s) => s.login.open);
+  const loginLines = useAppSelector((s) => s.login.lines);
+  const loginDone = useAppSelector((s) => s.login.done);
+  const loginStarting = useAppSelector((s) => s.login.starting);
+  const confirmBusy = useAppSelector(selectBusy("confirm"));
   const { dark, toggle } = useTheme();
-  const missingRetries = useRef(0);
-  const urlOpened = useRef(false);
-  const sortTimer = useRef<number | undefined>(undefined);
-
-  const refresh = useCallback(async () => {
-    try {
-      const s = await api.snapshot();
-      setSnap(s);
-      setSortKey(
-        s.sort_column === "weekly_quota" || s.sort_column === "quota"
-          ? "quota"
-          : s.sort_column === "weekly_reset"
-            ? "reset"
-            : s.sort_column === "email"
-              ? "email"
-              : null,
-      );
-      setSortAsc(s.sort_asc);
-      setLogsOpen(s.logs_expanded);
-    } catch (e) {
-      setStatus(`Failed to load state: ${e}`);
-    }
-  }, []);
-
-  const handleOutcome = useCallback(
-    async (o: AuthOutcome) => {
-      if (o.kind === "NoChange") return;
-      if (o.kind === "MissingToken") {
-        if (missingRetries.current < MISSING_TOKEN_RETRIES) {
-          missingRetries.current += 1;
-          setStatus("Auth file changing, retrying read…");
-          setTimeout(async () => {
-            try {
-              await handleOutcome(await api.processAuthFile());
-            } catch {
-              /* next poll */
-            }
-          }, 350);
-        } else {
-          missingRetries.current = 0;
-          await refresh();
-        }
-        return;
-      }
-      missingRetries.current = 0;
-      if (o.kind === "AuthRefreshed") {
-        setStatus(o.message);
-        void sendNotification({ title: "Codex Account Monitor", body: o.message });
-      } else if (o.kind === "Fetched" || o.kind === "LoggedOut") {
-        setStatus(o.message);
-      } else if (o.kind === "ParseError" || o.kind === "NoFile") {
-        setStatus(o.kind === "NoFile" ? "Auth file removed. Signed out." : o.message);
-      }
-      await refresh();
-    },
-    [refresh],
-  );
-
-  const poll = useCallback(async () => {
-    try {
-      await handleOutcome(await api.processAuthFile());
-    } catch {
-      /* transient */
-    }
-    try {
-      const r = await api.checkAutoFetch();
-      if (r) {
-        setStatus(r.message);
-        await refresh();
-      }
-    } catch (e) {
-      setStatus(`Auto-fetch failed: ${e}`);
-    }
-  }, [handleOutcome, refresh]);
 
   useEffect(() => {
-    refresh().then(() => poll());
-    const id = window.setInterval(poll, 5000);
+    void dispatch(loadSnapshot()).then(() => void dispatch(pollOnce()));
+    const id = window.setInterval(() => {
+      void dispatch(pollOnce());
+      void dispatch(refreshLogs());
+    }, 5000);
     const unlisteners: Array<() => void> = [];
-    listen("auth-file-changed", () => void poll()).then((u) => unlisteners.push(u));
-    listen<string>("codex-login-output", (e) =>
-      setLoginLines((lines) => [...lines.slice(-200), e.payload]),
-    ).then((u) => unlisteners.push(u));
+    listen("auth-file-changed", () => {
+      void dispatch(pollOnce());
+      void dispatch(refreshLogs());
+    }).then((u) => unlisteners.push(u));
+    listen<string>("codex-login-output", (e) => {
+      dispatch(appendLines([e.payload]));
+    }).then((u) => unlisteners.push(u));
     listen<string>("codex-login-url", (e) => {
-      if (!urlOpened.current) {
-        urlOpened.current = true;
-        void openUrl(e.payload).catch(() => undefined);
-      }
+      dispatch((_, getState) => {
+        if (!getState().login.urlOpened) {
+          dispatch(markUrlOpened());
+          void openUrl(e.payload).catch(() => undefined);
+        }
+      });
     }).then((u) => unlisteners.push(u));
     listen<{ ok: boolean; message: string }>("codex-login-done", (e) => {
-      setLoginDone(e.payload.message);
-      setStatus(e.payload.message);
-      void refresh();
+      dispatch(setDone(e.payload.message));
+      dispatch(setStatus(e.payload.message));
+      void dispatch(loadSnapshot());
+      void dispatch(refreshLogs());
     }).then((u) => unlisteners.push(u));
     return () => {
       window.clearInterval(id);
       unlisteners.forEach((u) => u());
     };
-  }, [poll, refresh]);
-
-  const checkUpdates = useCallback(async (manual: boolean) => {
-    if (manual) setCheckingUpdate(true);
-    try {
-      const update = await check();
-      if (update) {
-        setUpdateReady(`Update ${update.version} ready to install.`);
-        setStatus(`Update ${update.version} is available.`);
-        if (manual) {
-          await update.downloadAndInstall((ev) => {
-            if (ev.event === "Finished") setStatus("Update installed, restarting…");
-          });
-          await relaunch();
-        }
-      } else {
-        setUpdateReady(null);
-        if (manual) setStatus("You're already on the latest version.");
-      }
-    } catch (e) {
-      if (manual) setStatus(`Update check failed: ${e}`);
-    } finally {
-      if (manual) setCheckingUpdate(false);
-    }
-  }, []);
+  }, [dispatch]);
 
   useEffect(() => {
-    const t = window.setTimeout(() => void checkUpdates(false), 1500);
-    const id = window.setInterval(() => void checkUpdates(false), 6 * 3600 * 1000);
+    const t = window.setTimeout(() => void dispatch(checkUpdates(false)), 1500);
+    const id = window.setInterval(() => void dispatch(checkUpdates(false)), 6 * 3600 * 1000);
     return () => {
       window.clearTimeout(t);
       window.clearInterval(id);
     };
-  }, [checkUpdates]);
-
-  const installUpdate = useCallback(async () => {
-    setCheckingUpdate(true);
-    try {
-      const update = await check();
-      if (!update) {
-        setStatus("You're already on the latest version.");
-        return;
-      }
-      await update.downloadAndInstall();
-      await relaunch();
-    } catch (e) {
-      setStatus(`Update failed: ${e}`);
-    } finally {
-      setCheckingUpdate(false);
-    }
-  }, []);
+  }, [dispatch]);
 
   const rows = useMemo(() => {
     if (!snap) return [];
@@ -318,112 +251,27 @@ export default function App() {
     });
   }, [snap, sortKey, sortAsc]);
 
-  const onHeader = (key: SortKey) => {
-    let nextKey: SortKey | null = key;
-    let nextAsc = true;
-    if (sortKey === key) {
-      if (sortAsc) nextAsc = false;
-      else nextKey = null;
-    }
-    setSortKey(nextKey);
-    setSortAsc(nextAsc);
-    window.clearTimeout(sortTimer.current);
-    sortTimer.current = window.setTimeout(() => {
-      const col = nextKey === "quota" ? "weekly_quota" : nextKey === "reset" ? "weekly_reset" : nextKey;
-      void api.saveSort(col, nextAsc).catch(() => undefined);
-    }, 500);
-  };
-
   const arrow = (key: SortKey) => (sortKey === key ? (sortAsc ? " ▲" : " ▼") : " ↕");
 
-  async function doFetch(email?: string) {
-    setBusy(true);
-    try {
-      const r = email ? await api.fetchBackup(email) : await api.manualFetch();
-      setStatus(r.message);
-    } catch (e) {
-      setStatus(`Fetch failed: ${e}`);
-    } finally {
-      setBusy(false);
-      await refresh();
-    }
-  }
-
-  async function doConfirm() {
-    if (!confirm) return;
-    setBusy(true);
-    try {
-      if (confirm.kind === "remove") {
-        setStatus(await api.removeAccount(confirm.email));
-      } else if (confirm.kind === "archive") {
-        setStatus(await api.setArchived(confirm.email, !confirm.archived));
-      } else {
-        const msg = await api.switchAccount(confirm.email);
-        setStatus(msg);
-        setSwitchInfo(confirm.email);
-      }
-    } catch (e) {
-      setStatus(`Action failed: ${e}`);
-    } finally {
-      setConfirm(null);
-      setBusy(false);
-      await refresh();
-    }
-  }
-
-  async function openResets(email: string) {
-    try {
-      setResets(await api.resets(email));
-      setResetsEmail(email);
-    } catch (e) {
-      setStatus(`Could not load reset credits: ${e}`);
-    }
-  }
-
-  async function doExport() {
+  async function pickExportFile() {
     const path = await save({ filters: [{ name: "JSON", extensions: ["json"] }] });
-    if (!path) return;
-    try {
-      setStatus(await api.exportData(path));
-    } catch (e) {
-      setStatus(`Export failed: ${e}`);
-    }
+    if (path) void dispatch(doExport(path));
   }
 
-  async function doImport() {
+  async function pickImportFile() {
     const path = await open({ filters: [{ name: "JSON", extensions: ["json"] }] });
     if (!path || Array.isArray(path)) return;
-    try {
-      setStatus(await api.importData(path));
-      await refresh();
-    } catch (e) {
-      setStatus(`Import failed: ${e}`);
-    }
+    void dispatch(doImport(path));
   }
 
-  async function toggleLogs() {
-    const next = !logsOpen;
-    setLogsOpen(next);
-    await api.saveLogsExpanded(next).catch(() => undefined);
-    if (next) {
-      try {
-        setLogs(await api.logs());
-      } catch (e) {
-        setStatus(`Could not load logs: ${e}`);
-      }
-    }
-  }
-
-  function startLogin() {
-    setLoginLines([]);
-    setLoginDone(null);
-    urlOpened.current = false;
-    setLoginOpen(true);
-    api.loginStart().catch((e) => setLoginLines([`Failed to start login: ${e}`]));
+  function startLoginUi() {
+    dispatch(resetLines());
+    void dispatch(startLogin());
   }
 
   const now = Date.now() / 1000;
-  const soonest = resetsEmail && snap ? soonestExpiringCredit(snap.accounts[resetsEmail]?.resets) : undefined;
+  const soonest =
+    resetsEmail && snap ? soonestExpiringCredit(snap.accounts[resetsEmail]?.resets) : undefined;
 
   return (
     <TooltipProvider>
@@ -432,15 +280,19 @@ export default function App() {
           <ResizablePanel defaultSize={62} minSize={25}>
             <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
               <div className="min-h-0 flex-1 overflow-y-auto">
-                {rows.length === 0 ? (
+                {!initialized ? (
+                  <div className="flex h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <Spin /> Loading accounts…
+                  </div>
+                ) : rows.length === 0 ? (
                   <div className="flex h-48 flex-col items-center justify-center gap-3 text-muted-foreground">
                     <p className="text-sm">
                       {snap && !snap.auth_file_exists
                         ? "Not signed in — the Codex auth file is missing."
                         : "No accounts yet. Fetch quota or add an account."}
                     </p>
-                    <Button onClick={startLogin}>
-                      <UserPlus />
+                    <Button onClick={startLoginUi} disabled={loginStarting}>
+                      {loginStarting ? <Spin /> : <UserPlus />}
                       Add account
                     </Button>
                   </div>
@@ -449,17 +301,26 @@ export default function App() {
                     <TableHeader className="sticky top-0 bg-muted">
                       <TableRow>
                         <TableHead>
-                          <button className="font-bold hover:text-primary" onClick={() => onHeader("email")}>
+                          <button
+                            className="font-bold hover:text-primary"
+                            onClick={() => void dispatch(cycleSort("email"))}
+                          >
                             Account Email{arrow("email")}
                           </button>
                         </TableHead>
                         <TableHead>
-                          <button className="font-bold hover:text-primary" onClick={() => onHeader("quota")}>
+                          <button
+                            className="font-bold hover:text-primary"
+                            onClick={() => void dispatch(cycleSort("quota"))}
+                          >
                             Quota{arrow("quota")}
                           </button>
                         </TableHead>
                         <TableHead>
-                          <button className="font-bold hover:text-primary" onClick={() => onHeader("reset")}>
+                          <button
+                            className="font-bold hover:text-primary"
+                            onClick={() => void dispatch(cycleSort("reset"))}
+                          >
                             Reset{arrow("reset")}
                           </button>
                         </TableHead>
@@ -470,8 +331,12 @@ export default function App() {
                       {rows.map(([email, a]) => {
                         const isCurrent = email === snap?.current_email;
                         const weekly = weeklyOf(a);
+                        const fetchKey = isCurrent ? "fetch:all" : `fetch:${email}`;
                         return (
-                          <TableRow key={email} className={isCurrent ? "bg-emerald-500/10" : undefined}>
+                          <TableRow
+                            key={email}
+                            className={isCurrent ? "bg-emerald-500/10" : undefined}
+                          >
                             <TableCell>
                               <span className="flex min-w-0 items-center gap-2">
                                 <span className="truncate font-medium" title={email}>
@@ -481,40 +346,57 @@ export default function App() {
                                 {a.archived && <Badge variant="secondary">arch</Badge>}
                               </span>
                             </TableCell>
-                            <TableCell title={weekly ? `Used ${weekly.used_percent ?? "?"}%` : "Fetch quota first"}>
+                            <TableCell
+                              title={weekly ? `Used ${weekly.used_percent ?? "?"}%` : "Fetch quota first"}
+                            >
                               {formatQuotaLeft(usedOf(a))}
                             </TableCell>
-                            <TableCell className="max-w-56 truncate" title={formatResetDisplay(resetTsOf(a), now)}>
+                            <TableCell
+                              className="max-w-56 truncate"
+                              title={formatResetDisplay(resetTsOf(a), now)}
+                            >
                               {formatResetDisplay(resetTsOf(a), now)}
                             </TableCell>
                             <TableCell>
                               <span className="flex justify-end gap-0.5">
                                 <IconBtn
                                   title={isCurrent ? "Fetch quota" : "Fetch this backup account"}
-                                  onClick={() => void doFetch(isCurrent ? undefined : email)}
-                                  disabled={busy}
+                                  busyKey={fetchKey}
+                                  onClick={() =>
+                                    void dispatch(manualFetch(isCurrent ? undefined : email))
+                                  }
                                 >
                                   <RefreshCw />
                                 </IconBtn>
-                                <IconBtn title="Reset credits" onClick={() => void openResets(email)}>
+                                <IconBtn
+                                  title="Reset credits"
+                                  busyKey={`resets:${email}`}
+                                  onClick={() => void dispatch(openResets(email))}
+                                >
                                   <Coins />
                                 </IconBtn>
                                 {!isCurrent && (
                                   <IconBtn
                                     title="Switch to this account"
-                                    onClick={() => setConfirm({ kind: "switch", email })}
-                                    disabled={busy}
+                                    onClick={() => dispatch(setConfirm({ kind: "switch", email }))}
                                   >
                                     <ArrowLeftRight />
                                   </IconBtn>
                                 )}
                                 <IconBtn
                                   title={a.archived ? "Unarchive account" : "Archive account"}
-                                  onClick={() => setConfirm({ kind: "archive", email, archived: !!a.archived })}
+                                  onClick={() =>
+                                    dispatch(
+                                      setConfirm({ kind: "archive", email, archived: !!a.archived }),
+                                    )
+                                  }
                                 >
                                   {a.archived ? <ArchiveRestore /> : <Archive />}
                                 </IconBtn>
-                                <IconBtn title="Remove account" onClick={() => setConfirm({ kind: "remove", email })}>
+                                <IconBtn
+                                  title="Remove account"
+                                  onClick={() => dispatch(setConfirm({ kind: "remove", email }))}
+                                >
                                   <Trash2 />
                                 </IconBtn>
                               </span>
@@ -534,32 +416,36 @@ export default function App() {
           <ResizablePanel defaultSize={38} minSize={18}>
             <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-2">
               <p className="truncate px-1 text-xs text-muted-foreground" title={status}>
+                {anyBusy ? "Working… " : ""}
+                {updateProgress !== null ? `Downloading update ${updateProgress}%… ` : ""}
                 {status}
               </p>
               <div className="flex flex-wrap items-center gap-1">
                 <IconBtn title="Copy status" onClick={() => void navigator.clipboard.writeText(status)}>
                   <Copy />
                 </IconBtn>
-                <IconBtn title={logsOpen ? "Hide logs" : "Show logs"} onClick={() => void toggleLogs()}>
+                <IconBtn
+                  title={logsOpen ? "Hide logs" : "Show logs"}
+                  onClick={() => void dispatch(toggleLogs())}
+                >
                   <ScrollText />
                 </IconBtn>
                 {logsOpen && (
                   <IconBtn
                     title="Clear logs"
-                    onClick={() => {
-                      void api.clearLogs().then(() => setLogs([]));
-                    }}
+                    busyKey="logs:clear"
+                    onClick={() => void dispatch(clearLogs())}
                   >
                     <Eraser />
                   </IconBtn>
                 )}
-                <IconBtn title="Export data" onClick={() => void doExport()}>
+                <IconBtn title="Export data" busyKey="data:export" onClick={() => void pickExportFile()}>
                   <Download />
                 </IconBtn>
-                <IconBtn title="Import data" onClick={() => void doImport()}>
+                <IconBtn title="Import data" busyKey="data:import" onClick={() => void pickImportFile()}>
                   <Upload />
                 </IconBtn>
-                <IconBtn title="Add account via Codex login" onClick={startLogin}>
+                <IconBtn title="Add account via Codex login" onClick={startLoginUi}>
                   <UserPlus />
                 </IconBtn>
                 <span className="flex items-center gap-1.5 pl-1">
@@ -568,18 +454,13 @@ export default function App() {
                   </Label>
                   <Select
                     value={snap?.auto_fetch ?? "None"}
-                    onValueChange={(v) => {
-                      const val = v ?? "None";
-                      void api
-                        .saveAutoFetch(val)
-                        .then((m) => {
-                          setStatus(m);
-                          void refresh();
-                        })
-                        .catch((err) => setStatus(`Auto-fetch failed: ${err}`));
-                    }}
+                    onValueChange={(v) => void dispatch(saveAutoFetchValue(v ?? "None"))}
                   >
-                    <SelectTrigger id="auto-fetch" className="h-8 w-24" title="Auto-fetch interval for the active account">
+                    <SelectTrigger
+                      id="auto-fetch"
+                      className="h-8 w-24"
+                      title="Auto-fetch interval for the active account"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -591,27 +472,38 @@ export default function App() {
                     </SelectContent>
                   </Select>
                 </span>
-                <IconBtn title="Fetch quota now" onClick={() => void doFetch()} disabled={busy}>
+                <IconBtn
+                  title="Fetch quota now"
+                  busyKey="fetch:all"
+                  onClick={() => void dispatch(manualFetch(undefined))}
+                >
                   <RefreshCw />
                 </IconBtn>
                 <IconBtn
                   title={snap?.show_archived ? "Hide archived accounts" : "Show archived accounts"}
-                  onClick={() => {
-                    const next = !(snap?.show_archived ?? false);
-                    void api.saveShowArchived(next).then(() => void refresh());
-                  }}
+                  onClick={() => void dispatch(toggleArchivedVisibility())}
                 >
                   {snap?.show_archived ? <EyeOff /> : <Eye />}
                 </IconBtn>
                 <IconBtn
+                  title="Sign out"
+                  onClick={() => void dispatch(logout())}
+                >
+                  <LogOut />
+                </IconBtn>
+                <IconBtn
                   title="Check for updates"
-                  onClick={() => void checkUpdates(true)}
-                  disabled={checkingUpdate}
+                  busyKey="update:check"
+                  onClick={() => void dispatch(checkUpdates(true))}
                 >
                   <Check />
                 </IconBtn>
                 {updateReady && (
-                  <IconBtn title={updateReady} onClick={() => void installUpdate()}>
+                  <IconBtn
+                    title={updateProgress !== null ? `Installing… ${updateProgress}%` : updateReady}
+                    busyKey="update:install"
+                    onClick={() => void dispatch(installUpdate())}
+                  >
                     <ArrowDownToLine />
                   </IconBtn>
                 )}
@@ -630,7 +522,7 @@ export default function App() {
           </ResizablePanel>
         </ResizablePanelGroup>
 
-        <Dialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
+        <Dialog open={confirm !== null} onOpenChange={(o) => !o && dispatch(setConfirm(null))}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Confirm</DialogTitle>
@@ -642,17 +534,20 @@ export default function App() {
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setConfirm(null)}>
+              <Button variant="outline" onClick={() => dispatch(setConfirm(null))}>
                 Cancel
               </Button>
-              <Button onClick={() => void doConfirm()} disabled={busy}>
-                Confirm
+              <Button onClick={() => void dispatch(runConfirmAction())} disabled={confirmBusy}>
+                {confirmBusy ? <Spin /> : "Confirm"}
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
-        <Dialog open={resetsEmail !== null} onOpenChange={(o) => !o && (setResetsEmail(null), setResets(null))}>
+        <Dialog
+          open={resetsEmail !== null}
+          onOpenChange={(o) => !o && dispatch(setResetsView({ email: null, data: null }))}
+        >
           <DialogContent className="max-w-xl">
             <DialogHeader>
               <DialogTitle>Reset Credits — {resetsEmail}</DialogTitle>
@@ -693,8 +588,8 @@ export default function App() {
           open={loginOpen}
           onOpenChange={(o) => {
             if (!o) {
-              if (!loginDone) void api.loginCancel();
-              setLoginOpen(false);
+              if (!loginDone) void dispatch(cancelLogin());
+              dispatch(setLoginOpen(false));
             }
           }}
         >
@@ -709,9 +604,9 @@ export default function App() {
             </ScrollArea>
             <DialogFooter>
               {loginDone ? (
-                <Button onClick={() => setLoginOpen(false)}>Close</Button>
+                <Button onClick={() => dispatch(setLoginOpen(false))}>Close</Button>
               ) : (
-                <Button variant="outline" onClick={() => void api.loginCancel()}>
+                <Button variant="outline" onClick={() => void dispatch(cancelLogin())}>
                   Cancel
                 </Button>
               )}
@@ -719,7 +614,7 @@ export default function App() {
           </DialogContent>
         </Dialog>
 
-        <Dialog open={switchInfo !== null} onOpenChange={(o) => !o && setSwitchInfo(null)}>
+        <Dialog open={switchInfo !== null} onOpenChange={(o) => !o && dispatch(setSwitchInfo(null))}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Switched account</DialogTitle>
@@ -728,16 +623,16 @@ export default function App() {
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setSwitchInfo(null)}>
+              <Button variant="outline" onClick={() => dispatch(setSwitchInfo(null))}>
                 Later
               </Button>
               <Button
                 onClick={() => {
                   void api
                     .restartCodex()
-                    .then((m) => setStatus(m))
-                    .catch((e) => setStatus(`Restart failed: ${e}`));
-                  setSwitchInfo(null);
+                    .then((m) => dispatch(setStatus(m)))
+                    .catch((e) => dispatch(setStatus(`Restart failed: ${e}`)));
+                  dispatch(setSwitchInfo(null));
                 }}
               >
                 Restart Codex

@@ -60,8 +60,21 @@ pub struct FetchResult {
     pub message: String,
 }
 
-fn append_log(state: &AppState, message: &str) {
-    if message.is_empty() {
+fn boot_line(log_path: &Path, message: &str) {
+    if let Some(parent) = log_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    use std::fmt::Write as _;
+    let mut line = String::new();
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let _ = writeln!(line, "[{ts}] {message}");
+    use std::io::Write as _;
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(log_path) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+fn append_log(state: &AppState, message: &str) {    if message.is_empty() {
         return;
     }
     if let Some(parent) = state.log_path.parent() {
@@ -719,11 +732,23 @@ pub fn build_monitor_state() -> (MonitorState, PathBuf) {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("activity.log");
+    boot_line(&log_path, "CodexMonitor started.");
     let mut storage = storage;
     #[cfg(feature = "legacy-migrate")]
     {
         crate::legacy::migrate_legacy_account_dirs(&auth.accounts_dir);
-        let _ = crate::legacy::migrate_if_needed(&mut storage);
+        match crate::legacy::migrate_if_needed(&mut storage) {
+            Ok(Some(report)) => boot_line(
+                &log_path,
+                &format!(
+                    "Migrated {} account(s) from previous install ({}).",
+                    report.accounts_migrated,
+                    report.source.display()
+                ),
+            ),
+            Ok(None) => {}
+            Err(e) => boot_line(&log_path, &format!("Migration skipped: {e}")),
+        }
     }
     // Legacy activity log moves next to the v2 store (mirrors _migrate_legacy_log_file).
     if !log_path.exists() {
