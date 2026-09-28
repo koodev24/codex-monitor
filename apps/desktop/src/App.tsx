@@ -426,6 +426,7 @@ export default function App() {
                 </IconBtn>
                 <IconBtn
                   title={logsOpen ? "Hide logs" : "Show logs"}
+                  busyKey="logs:toggle"
                   onClick={() => void dispatch(toggleLogs())}
                 >
                   <ScrollText />

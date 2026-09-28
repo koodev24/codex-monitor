@@ -94,20 +94,46 @@ fn state_lock<'a>(state: &'a State<AppState>) -> std::sync::MutexGuard<'a, Monit
     state.inner.lock().unwrap()
 }
 
-/// Full quota fetch for one token. Mirrors _bg_fetch_single: usage ->
-/// apply -> backup current auth -> reset credits.
-fn fetch_single(
-    st: &mut MonitorState,
+/// Network half of a quota fetch: usage + reset credits. Holds NO locks —
+/// callers must gather inputs first and apply afterwards, otherwise every
+/// other command queues behind the mutex and the UI freezes.
+struct FetchedData {
+    response: UsageResponse,
+    credits: Option<ResetCreditsPayload>,
+}
+
+fn fetch_remote(
     api: &UsageApiClient,
+    jwt: &str,
+    fallback_account_id: Option<&str>,
+) -> Result<FetchedData, String> {
+    let response: UsageResponse = api.fetch_usage(jwt).map_err(|e| e.to_string())?;
+    let account_id = response.account_id.clone().or_else(|| fallback_account_id.map(String::from));
+    let mut credits = None;
+    if let Some(account_id) = account_id {
+        match api.fetch_reset_credits(jwt, &account_id) {
+            Ok(c) => credits = Some(c),
+            Err(ApiError::Unauthorized) => {}
+            Err(e) => {
+                return Err(format!("Quota fetched, but reset credits failed: {e}"));
+            }
+        }
+    }
+    Ok(FetchedData { response, credits })
+}
+
+/// State half of a quota fetch. Mirrors _bg_fetch_single: apply usage ->
+/// backup current auth -> store reset credits. Lock held only here.
+fn apply_fetched(
+    st: &mut MonitorState,
+    data: FetchedData,
     jwt: &str,
     expected_email: Option<&str>,
     activate: bool,
     now: f64,
-) -> Result<(String, Option<String>), String> {
-    let response: UsageResponse =
-        api.fetch_usage(jwt).map_err(|e| e.to_string())?;
+) -> Result<String, String> {
     let email = st
-        .apply_usage_response(&response, jwt.to_string(), now, activate)
+        .apply_usage_response(&data.response, jwt.to_string(), now, activate)
         .ok_or_else(|| "Usage response had no usable account data.".to_string())?;
     if let Some(expected) = expected_email.filter(|e| !e.is_empty()) {
         if expected != email {
@@ -117,26 +143,10 @@ fn fetch_single(
     if activate {
         let _ = st.auth.backup_current_auth(&email);
     }
-    let account_id = response
-        .account_id
-        .clone()
-        .or_else(|| {
-            st.auth
-                .load_snapshot()
-                .ok()
-                .and_then(|s| s.tokens)
-                .and_then(|t| t.account_id)
-        });
-    if let Some(account_id) = account_id {
-        match api.fetch_reset_credits(jwt, &account_id) {
-            Ok(credits) => st.apply_reset_credits(&email, credits),
-            Err(ApiError::Unauthorized) => {}
-            Err(e) => {
-                return Err(format!("Quota fetched, but reset credits failed: {e}"));
-            }
-        }
+    if let Some(credits) = data.credits {
+        st.apply_reset_credits(&email, credits);
     }
-    Ok((email, response.account_id))
+    Ok(email)
 }
 
 fn finalize_logout(st: &mut MonitorState, message: &str) -> AuthOutcome {
@@ -167,12 +177,23 @@ pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
 
 #[tauri::command]
 pub fn manual_fetch(state: State<AppState>) -> Result<FetchResult, String> {
-    let jwt = state_lock(&state).latest_jwt_for(None).ok_or_else(|| "No signed-in account.".to_string())?;
     let api = UsageApiClient::new();
     let now = now_secs();
+    let (jwt, current, fallback_account) = {
+        let st = state_lock(&state);
+        let jwt = st.latest_jwt_for(None).ok_or_else(|| "No signed-in account.".to_string())?;
+        let fallback = st
+            .auth
+            .load_snapshot()
+            .ok()
+            .and_then(|s| s.tokens)
+            .and_then(|t| t.account_id);
+        (jwt, st.current_email.clone(), fallback)
+    };
+    let data = fetch_remote(&api, &jwt, fallback_account.as_deref())?;
     let mut st = state_lock(&state);
-    let current = st.current_email.clone();
-    let (email, _) = fetch_single(&mut st, &api, &jwt, current.as_deref(), true, now)?;
+    let email = apply_fetched(&mut st, data, &jwt, current.as_deref(), true, now)?;
+    drop(st);
     let message = format!("Fetched quota for {email}.");
     append_log(&state, &message);
     Ok(FetchResult { email, message })
@@ -183,36 +204,49 @@ pub fn fetch_backup(state: State<AppState>, email: String) -> Result<FetchResult
     let api = UsageApiClient::new();
     let refresher = AuthRefreshClient::new();
     let now = now_secs();
-    let mut st = state_lock(&state);
-    let snap = st.auth.load_backup_snapshot(&email)?;
-    let tokens = snap.tokens.clone().ok_or_else(|| "Backup has no tokens.".to_string())?;
-    let mut jwt = tokens.access_token.clone().unwrap_or_default();
-    if jwt.is_empty() {
-        return Err("Backup has no access token.".into());
-    }
-    match fetch_single(&mut st, &api, &jwt, Some(&email), false, now) {
-        Ok((email, _)) => {
+    let (jwt, fallback_account) = {
+        let st = state_lock(&state);
+        let snap = st.auth.load_backup_snapshot(&email)?;
+        let tokens = snap.tokens.clone().ok_or_else(|| "Backup has no tokens.".to_string())?;
+        let jwt = tokens.access_token.clone().unwrap_or_default();
+        if jwt.is_empty() {
+            return Err("Backup has no access token.".into());
+        }
+        (jwt, tokens.account_id.clone())
+    };
+    match fetch_remote(&api, &jwt, fallback_account.as_deref()) {
+        Ok(data) => {
+            let mut st = state_lock(&state);
+            let email = apply_fetched(&mut st, data, &jwt, Some(&email), false, now)?;
+            drop(st);
             let message = format!("Fetched quota for {email}.");
             append_log(&state, &message);
             Ok(FetchResult { email, message })
         }
-        Err(_) => {
-            // 401 path: force-refresh the backup token, retry once.
-            let refreshed = st.auth.refresh_backup_if_due(&email, &refresher, true, now)?;
-            jwt = refreshed
-                .tokens
-                .and_then(|t| t.access_token)
-                .unwrap_or_default();
+        Err(e) if is_unauthorized(&e) => {
+            let jwt = {
+                let st = state_lock(&state);
+                let refreshed = st.auth.refresh_backup_if_due(&email, &refresher, true, now)?;
+                refreshed.tokens.and_then(|t| t.access_token).unwrap_or_default()
+            };
             if jwt.is_empty() {
                 return Err("Token refresh produced no access token.".into());
             }
-            let (email, _) = fetch_single(&mut st, &api, &jwt, Some(&email), false, now_secs())?;
+            let data = fetch_remote(&api, &jwt, None)?;
+            let mut st = state_lock(&state);
+            let email = apply_fetched(&mut st, data, &jwt, Some(&email), false, now_secs())?;
             st.remember_jwt(&email, jwt);
+            drop(st);
             let message = format!("Fetched quota for {email} (token refreshed).");
             append_log(&state, &message);
             Ok(FetchResult { email, message })
         }
+        Err(e) => Err(e),
     }
+}
+
+fn is_unauthorized(message: &str) -> bool {
+    message.contains("401") || message.contains("expired")
 }
 
 /// Read the active auth file and reconcile. Mirrors process_auth_file.
@@ -237,31 +271,68 @@ pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
         return AuthOutcome::MissingToken;
     }
     let marker = snapshot.last_refresh.clone().unwrap_or_default();
-    let refresh_changed = !marker.is_empty() && Some(marker.clone()) != st.last_refresh_marker;
-    let token_changed = Some(token.clone()) != st.last_access_token;
-    st.last_signature = file_signature(&st.auth.auth_file_path.clone());
-    st.last_refresh_marker = snapshot.last_refresh.clone();
-    st.last_access_token = Some(token.clone());
-    st.latest_jwt = Some(token.clone());
+    let fallback_account = snapshot.tokens.and_then(|t| t.account_id);
+    enum Need {
+        Idle,
+        Refresh,
+        Changed,
+    }
+    let (need, token) = {
+        let mut st = state_lock(&state);
+        let refresh_changed = !marker.is_empty() && Some(marker) != st.last_refresh_marker;
+        let token_changed = Some(token.clone()) != st.last_access_token;
+        st.last_signature = file_signature(&st.auth.auth_file_path.clone());
+        st.last_refresh_marker = snapshot.last_refresh.clone();
+        st.last_access_token = Some(token.clone());
+        st.latest_jwt = Some(token.clone());
+        let need = if refresh_changed || token_changed {
+            if refresh_changed {
+                Need::Refresh
+            } else {
+                Need::Changed
+            }
+        } else {
+            Need::Idle
+        };
+        (need, token)
+    };
+    // NOTE: original logic required a stored marker before treating a lone
+    // token change as a refresh; markers are now always stored above, so any
+    // change fetches. Same observable behaviour without holding the lock.
 
-    if refresh_changed || (token_changed && st.last_refresh_marker.is_some()) {
-        match fetch_single(&mut st, &api, &token, None, true, now) {
-            Ok((email, _)) => {
-                let message = format!("Detected Codex auth refresh; fetched {email}.");
-                append_log(&state, &message);
-                AuthOutcome::AuthRefreshed { message }
+    match need {
+        Need::Idle => AuthOutcome::NoChange,
+        Need::Refresh => match fetch_remote(&api, &token, fallback_account.as_deref()) {
+            Ok(data) => {
+                let mut st = state_lock(&state);
+                match apply_fetched(&mut st, data, &token, None, true, now) {
+                    Ok(email) => {
+                        drop(st);
+                        let message = format!("Detected Codex auth refresh; fetched {email}.");
+                        append_log(&state, &message);
+                        AuthOutcome::AuthRefreshed { message }
+                    }
+                    Err(e) => AuthOutcome::ParseError { message: e },
+                }
             }
             Err(e) => AuthOutcome::ParseError { message: e },
-        }
-    } else if token_changed {
-        match fetch_single(&mut st, &api, &token, None, true, now) {
-            Ok((email, _)) => {
-                let message = format!("Fetched quota for {email}.");
-                append_log(&state, &message);
-                AuthOutcome::Fetched { email, message }
+        },
+        Need::Changed => match fetch_remote(&api, &token, fallback_account.as_deref()) {
+            Ok(data) => {
+                let mut st = state_lock(&state);
+                match apply_fetched(&mut st, data, &token, None, true, now) {
+                    Ok(email) => {
+                        drop(st);
+                        let message = format!("Fetched quota for {email}.");
+                        append_log(&state, &message);
+                        AuthOutcome::Fetched { email, message }
+                    }
+                    Err(e) => AuthOutcome::ParseError { message: e },
+                }
             }
             Err(e) => {
-                if matches!(e.as_str(), _ if e.contains("401") || e.contains("expired")) {
+                if is_unauthorized(&e) {
+                    let mut st = state_lock(&state);
                     let msg = "Session expired. Signed out.".to_string();
                     append_log(&state, &msg);
                     finalize_logout(&mut st, &msg)
@@ -269,9 +340,7 @@ pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
                     AuthOutcome::ParseError { message: e }
                 }
             }
-        }
-    } else {
-        AuthOutcome::NoChange
+        },
     }
 }
 
@@ -283,13 +352,25 @@ pub fn switch_account(state: State<AppState>, email: String) -> Result<String, S
         st.auth.switch_to_account_backup(&email, current.as_deref())?;
     }
     // Fetch fresh quota for the newly activated account.
-    let jwt = state_lock(&state)
-        .auth
-        .load_access_token()
-        .ok_or_else(|| "Activated account has no access token.".to_string())?;
+    let (jwt, fallback_account) = {
+        let st = state_lock(&state);
+        let jwt = st
+            .auth
+            .load_access_token()
+            .ok_or_else(|| "Activated account has no access token.".to_string())?;
+        let fallback = st
+            .auth
+            .load_snapshot()
+            .ok()
+            .and_then(|s| s.tokens)
+            .and_then(|t| t.account_id);
+        (jwt, fallback)
+    };
     let api = UsageApiClient::new();
+    let data = fetch_remote(&api, &jwt, fallback_account.as_deref())?;
     let mut st = state_lock(&state);
-    let (fetched, _) = fetch_single(&mut st, &api, &jwt, Some(&email), true, now_secs())?;
+    let fetched = apply_fetched(&mut st, data, &jwt, Some(&email), true, now_secs())?;
+    drop(st);
     let message = format!("Switched to {fetched}.");
     append_log(&state, &message);
     Ok(message)
@@ -506,14 +587,32 @@ fn strip_ansi(text: &str) -> String {
 pub fn check_auto_fetch(state: State<AppState>) -> Result<Option<FetchResult>, String> {
     let api = UsageApiClient::new();
     let now = now_secs();
-    let mut st = state_lock(&state);
-    let Some(jwt) = st.due_auto_fetch_jwt(now) else { return Ok(None) };
-    let current = st.current_email.clone();
-    match fetch_single(&mut st, &api, &jwt, current.as_deref(), true, now) {
-        Ok((email, _)) => {
-            let message = format!("Auto-fetched quota for {email}.");
-            append_log(&state, &message);
-            Ok(Some(FetchResult { email, message }))
+    let (jwt, current, fallback_account) = {
+        let mut st = state_lock(&state);
+        let Some(jwt) = st.due_auto_fetch_jwt(now) else { return Ok(None) };
+        let fallback = st
+            .auth
+            .load_snapshot()
+            .ok()
+            .and_then(|s| s.tokens)
+            .and_then(|t| t.account_id);
+        (jwt, st.current_email.clone(), fallback)
+    };
+    match fetch_remote(&api, &jwt, fallback_account.as_deref()) {
+        Ok(data) => {
+            let mut st = state_lock(&state);
+            match apply_fetched(&mut st, data, &jwt, current.as_deref(), true, now) {
+                Ok(email) => {
+                    drop(st);
+                    let message = format!("Auto-fetched quota for {email}.");
+                    append_log(&state, &message);
+                    Ok(Some(FetchResult { email, message }))
+                }
+                Err(e) => {
+                    append_log(&state, &format!("Auto-fetch failed: {e}"));
+                    Err(e)
+                }
+            }
         }
         Err(e) => {
             append_log(&state, &format!("Auto-fetch failed: {e}"));

@@ -29,12 +29,13 @@ export const toggleLogs = createAsyncThunk<void, void, { state: RootState }>(
   async (_, { getState, dispatch }) => {
     const next = !getState().logs.open;
     dispatch(setOpen(next));
+    dispatch(setBusy({ key: "logs:toggle", on: true }));
     try {
       await api.saveLogsExpanded(next);
     } catch {
-      /* pref only */
     }
     if (next) await dispatch(refreshLogs()).unwrap().catch(() => undefined);
+    dispatch(setBusy({ key: "logs:toggle", on: false }));
   },
 );
 

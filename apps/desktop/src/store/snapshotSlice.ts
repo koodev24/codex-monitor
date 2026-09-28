@@ -100,6 +100,7 @@ export const manualFetch = createAsyncThunk<void, string | undefined, { state: R
   async (email, { dispatch }) => {
     const key = email ? `fetch:${email}` : "fetch:all";
     dispatch(setBusy({ key, on: true }));
+    dispatch(setStatus(email ? `Fetching quota for ${email}…` : "Fetching quota…"));
     try {
       const r = email ? await api.fetchBackup(email) : await api.manualFetch();
       dispatch(setStatus(r.message));
@@ -118,6 +119,7 @@ export const runConfirmAction = createAsyncThunk<void, void, { state: RootState 
   async (_, { getState, dispatch }) => {
     const confirm = getState().ui.confirm;
     if (!confirm || getState().ui.busy["confirm"]) return;
+    if (confirm.kind === "switch") dispatch(setStatus(`Switching to ${confirm.email}…`));
     dispatch(setBusy({ key: "confirm", on: true }));
     try {
       if (confirm.kind === "remove") {
