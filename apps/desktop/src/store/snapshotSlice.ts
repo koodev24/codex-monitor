@@ -140,30 +140,28 @@ export const fetchAllAccounts = createAsyncThunk<void, void, { state: RootState 
       return;
     }
     const current = snap?.current_email ?? null;
+    const rowKeyOf = (account: string) =>
+      account === current ? "fetch:all" : `fetch:${account}`;
     dispatch(setBusy({ key: KEY, on: true }));
-    let fetched = 0;
-    const failed: string[] = [];
+    emails.forEach((account) => dispatch(setBusy({ key: rowKeyOf(account), on: true })));
+    dispatch(setStatus(`Fetching ${emails.length} accounts…`));
     try {
-      for (let i = 0; i < emails.length; i++) {
-        const account = emails[i];
-        const rowKey = account === current ? "fetch:all" : `fetch:${account}`;
-        dispatch(setBusy({ key: rowKey, on: true }));
-        dispatch(setStatus(`Fetching ${account} (${i + 1}/${emails.length})…`));
-        try {
-          if (account === current) {
-            await api.manualFetch();
-          } else {
-            await api.fetchBackup(account);
-          }
+      const results = await Promise.allSettled(
+        emails.map((account) =>
+          account === current ? api.manualFetch() : api.fetchBackup(account),
+        ),
+      );
+      let fetched = 0;
+      const failed: string[] = [];
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled") {
           fetched++;
-        } catch (e) {
-          const raw = `${e}`;
-          const prefix = `NO_BACKUP ${account}: `;
-          failed.push(`${account} (${raw.startsWith(prefix) ? raw.slice(prefix.length) : raw})`);
-        } finally {
-          dispatch(setBusy({ key: rowKey, on: false }));
+        } else {
+          const raw = `${r.reason}`;
+          const prefix = `NO_BACKUP ${emails[i]}: `;
+          failed.push(`${emails[i]} (${raw.startsWith(prefix) ? raw.slice(prefix.length) : raw})`);
         }
-      }
+      });
       await dispatch(loadSnapshot());
       await dispatch(refreshLogs());
       if (failed.length === 0) {
@@ -172,6 +170,7 @@ export const fetchAllAccounts = createAsyncThunk<void, void, { state: RootState 
         dispatch(setStatus(`Fetched ${fetched}, ${failed.length} failed: ${failed.join("; ")}`));
       }
     } finally {
+      emails.forEach((account) => dispatch(setBusy({ key: rowKeyOf(account), on: false })));
       dispatch(setBusy({ key: KEY, on: false }));
     }
   },
