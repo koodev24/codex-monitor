@@ -119,14 +119,60 @@ export const manualFetch = createAsyncThunk<void, string | undefined, { state: R
       await dispatch(refreshLogs());
     } catch (e) {
       const raw = `${e}`;
-      if (email && raw.startsWith(`NO_BACKUP ${email}: `)) {
-        dispatch(setStatus(`Fetch failed: ${raw.slice(`NO_BACKUP ${email}: `.length)}`));
-        dispatch(setConfirm({ kind: "remove", email }));
-      } else {
-        dispatch(setStatus(`Fetch failed: ${raw}`));
-      }
+      const prefix = email ? `NO_BACKUP ${email}: ` : null;
+      const message = prefix && raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+      dispatch(setStatus(`Fetch failed: ${message}`));
     } finally {
       dispatch(setBusy({ key, on: false }));
+    }
+  },
+);
+
+export const fetchAllAccounts = createAsyncThunk<void, void, { state: RootState }>(
+  "snapshot/fetchAll",
+  async (_, { dispatch, getState }) => {
+    const KEY = "fetch:all-accounts";
+    if (getState().ui.busy[KEY]) return;
+    const snap = getState().snapshot.snap;
+    const emails = snap ? Object.keys(snap.accounts) : [];
+    if (emails.length === 0) {
+      dispatch(setStatus("No accounts to fetch."));
+      return;
+    }
+    const current = snap?.current_email ?? null;
+    dispatch(setBusy({ key: KEY, on: true }));
+    let fetched = 0;
+    const failed: string[] = [];
+    try {
+      for (let i = 0; i < emails.length; i++) {
+        const account = emails[i];
+        const rowKey = account === current ? "fetch:all" : `fetch:${account}`;
+        dispatch(setBusy({ key: rowKey, on: true }));
+        dispatch(setStatus(`Fetching ${account} (${i + 1}/${emails.length})…`));
+        try {
+          if (account === current) {
+            await api.manualFetch();
+          } else {
+            await api.fetchBackup(account);
+          }
+          fetched++;
+        } catch (e) {
+          const raw = `${e}`;
+          const prefix = `NO_BACKUP ${account}: `;
+          failed.push(`${account} (${raw.startsWith(prefix) ? raw.slice(prefix.length) : raw})`);
+        } finally {
+          dispatch(setBusy({ key: rowKey, on: false }));
+        }
+      }
+      await dispatch(loadSnapshot());
+      await dispatch(refreshLogs());
+      if (failed.length === 0) {
+        dispatch(setStatus(`Fetched all ${fetched} account(s).`));
+      } else {
+        dispatch(setStatus(`Fetched ${fetched}, ${failed.length} failed: ${failed.join("; ")}`));
+      }
+    } finally {
+      dispatch(setBusy({ key: KEY, on: false }));
     }
   },
 );
