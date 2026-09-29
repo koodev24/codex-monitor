@@ -206,11 +206,20 @@ pub async fn fetch_backup(state: State<'_, AppState>, email: String) -> Result<F
     let now = now_secs();
     let (jwt, fallback_account) = {
         let st = state_lock(&state);
-        let snap = st.auth.load_backup_snapshot(&email)?;
-        let tokens = snap.tokens.clone().ok_or_else(|| "Backup has no tokens.".to_string())?;
+        if !st.auth.backup_exists(&email) {
+            return Err(format!(
+                "NO_BACKUP {email}: No saved sign-in for {email} (backup file missing). The quota row is kept, but it cannot be fetched without signing in again."
+            ));
+        }
+        let snap = st.auth.load_backup_snapshot(&email).map_err(|e| {
+            format!("Saved sign-in for {email} is unreadable ({e}). Remove the account if it is gone.")
+        })?;
+        let tokens = snap.tokens.clone().ok_or_else(|| {
+            format!("No saved tokens for {email}. Remove the account if it is gone.")
+        })?;
         let jwt = tokens.access_token.clone().unwrap_or_default();
         if jwt.is_empty() {
-            return Err("Backup has no access token.".into());
+            return Err(format!("No saved access token for {email}. Remove the account if it is gone."));
         }
         (jwt, tokens.account_id.clone())
     };

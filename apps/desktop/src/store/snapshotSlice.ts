@@ -118,7 +118,13 @@ export const manualFetch = createAsyncThunk<void, string | undefined, { state: R
       await dispatch(loadSnapshot());
       await dispatch(refreshLogs());
     } catch (e) {
-      dispatch(setStatus(`Fetch failed: ${e}`));
+      const raw = `${e}`;
+      if (email && raw.startsWith(`NO_BACKUP ${email}: `)) {
+        dispatch(setStatus(`Fetch failed: ${raw.slice(`NO_BACKUP ${email}: `.length)}`));
+        dispatch(setConfirm({ kind: "remove", email }));
+      } else {
+        dispatch(setStatus(`Fetch failed: ${raw}`));
+      }
     } finally {
       dispatch(setBusy({ key, on: false }));
     }
