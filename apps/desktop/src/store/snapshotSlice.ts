@@ -37,6 +37,14 @@ function sortFromColumn(col: string | null): SortKey | null {
 export const loadSnapshot = createAsyncThunk<void, void, { state: RootState }>(
   "snapshot/load",
   async (_, { dispatch }) => {
+    try {
+      const pong = await withTimeout(api.ping(), 5000);
+      dispatch(setStatus(`Bridge ok (${pong}). Loading accounts…`));
+    } catch {
+      dispatch(setLoadError("Bridge timeout: the app backend did not answer ping within 5s."));
+      dispatch(setStatus("Bridge timeout."));
+      return;
+    }
     let lastError = "unknown error";
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
@@ -53,6 +61,13 @@ export const loadSnapshot = createAsyncThunk<void, void, { state: RootState }>(
     dispatch(setStatus(`Failed to load state: ${lastError}`));
   },
 );
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
+  ]);
+}
 
 export const pollOnce = createAsyncThunk<void, void, { state: RootState }>(
   "snapshot/poll",

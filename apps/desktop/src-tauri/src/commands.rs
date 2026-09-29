@@ -158,6 +158,12 @@ fn finalize_logout(st: &mut MonitorState, message: &str) -> AuthOutcome {
 }
 
 #[tauri::command]
+pub fn ping() -> String {
+    eprintln!("[backend] ping");
+    "pong".into()
+}
+
+#[tauri::command]
 pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
     eprintln!("[backend] get_snapshot enter");
     let st = state_lock(&state);
@@ -869,6 +875,7 @@ pub fn build_monitor_state() -> (MonitorState, PathBuf) {    let storage = Usage
 
 pub fn all_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool {
     tauri::generate_handler![
+        ping,
         get_snapshot,
         manual_fetch,
         fetch_backup,
