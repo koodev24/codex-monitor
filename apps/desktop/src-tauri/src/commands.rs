@@ -265,6 +265,7 @@ fn is_unauthorized(message: &str) -> bool {
 /// tkinter after() loop); retry backoff for MissingToken lives there too.
 #[tauri::command]
 pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
+    eprintln!("[backend] process_auth_file");
     let api = UsageApiClient::new();
     let now = now_secs();
     let mut st = state_lock(&state);
@@ -596,6 +597,7 @@ fn strip_ansi(text: &str) -> String {
 
 #[tauri::command]
 pub fn check_auto_fetch(state: State<AppState>) -> Result<Option<FetchResult>, String> {
+    eprintln!("[backend] check_auto_fetch");
     let api = UsageApiClient::new();
     let now = now_secs();
     let (jwt, current, fallback_account) = {
