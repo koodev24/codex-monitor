@@ -158,16 +158,9 @@ fn finalize_logout(st: &mut MonitorState, message: &str) -> AuthOutcome {
 }
 
 #[tauri::command]
-pub fn ping() -> String {
-    eprintln!("[backend] ping");
-    "pong".into()
-}
-
-#[tauri::command]
 pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
-    eprintln!("[backend] get_snapshot enter");
     let st = state_lock(&state);
-    let snap = Snapshot {
+    Snapshot {
         accounts: st.usage.clone(),
         current_email: st.current_email.clone(),
         auto_fetch: st.auto_fetch.clone(),
@@ -179,11 +172,7 @@ pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
         auth_file_exists: st.auth.auth_file_exists(),
         backup_emails: st.auth.list_backup_emails(),
         app_version: app.package_info().version.to_string(),
-    };
-    let n = snap.accounts.len();
-    drop(st);
-    eprintln!("[backend] get_snapshot ok accounts={n}");
-    snap
+    }
 }
 
 #[tauri::command]
@@ -265,48 +254,61 @@ fn is_unauthorized(message: &str) -> bool {
 /// tkinter after() loop); retry backoff for MissingToken lives there too.
 #[tauri::command]
 pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
-    eprintln!("[backend] process_auth_file");
     let api = UsageApiClient::new();
     let now = now_secs();
-    let mut st = state_lock(&state);
-    if !st.auth.auth_file_exists() {
-        let msg = "Auth file removed. Signed out.".to_string();
-        append_log(&state, &msg);
-        return finalize_logout(&mut st, &msg);
-    }
-    let snapshot = match st.auth.load_snapshot() {
-        Ok(s) => s,
-        Err(e) => return AuthOutcome::ParseError { message: format!("Could not read auth file: {e}") },
-    };
-    let token = snapshot.tokens.clone().and_then(|t| t.access_token).unwrap_or_default();
-    if token.is_empty() {
-        return AuthOutcome::MissingToken;
-    }
-    let marker = snapshot.last_refresh.clone().unwrap_or_default();
-    let fallback_account = snapshot.tokens.and_then(|t| t.account_id);
     enum Need {
         Idle,
         Refresh,
         Changed,
     }
-    let (need, token) = {
+    // Phase 1: gather file state under a single short lock, then drop the
+    // guard before any network I/O. Never nest state_lock (std Mutex is
+    // non-reentrant) and never hold the guard across fetch_remote.
+    let ready: Option<(String, String, Option<String>, Option<String>)> = {
+        let st = state_lock(&state);
+        if !st.auth.auth_file_exists() {
+            drop(st);
+            let msg = "Auth file removed. Signed out.".to_string();
+            append_log(&state, &msg);
+            let mut st = state_lock(&state);
+            return finalize_logout(&mut st, &msg);
+        }
+        let snapshot = match st.auth.load_snapshot() {
+            Ok(s) => s,
+            Err(e) => {
+                return AuthOutcome::ParseError { message: format!("Could not read auth file: {e}") }
+            }
+        };
+        let token = snapshot.tokens.clone().and_then(|t| t.access_token).unwrap_or_default();
+        if token.is_empty() {
+            return AuthOutcome::MissingToken;
+        }
+        let marker = snapshot.last_refresh.clone().unwrap_or_default();
+        let last_refresh = snapshot.last_refresh.clone();
+        let fallback_account = snapshot.tokens.and_then(|t| t.account_id);
+        Some((token, marker, fallback_account, last_refresh))
+    };
+    let (token, marker, fallback_account, last_refresh) = match ready {
+        Some(v) => v,
+        None => return AuthOutcome::NoChange,
+    };
+    // Phase 2: compute need + update markers under a second short lock.
+    let need = {
         let mut st = state_lock(&state);
-        let refresh_changed = !marker.is_empty() && Some(marker) != st.last_refresh_marker;
+        let refresh_changed = !marker.is_empty() && Some(marker.clone()) != st.last_refresh_marker;
         let token_changed = Some(token.clone()) != st.last_access_token;
-        st.last_signature = file_signature(&st.auth.auth_file_path.clone());
-        st.last_refresh_marker = snapshot.last_refresh.clone();
+        let auth_path = st.auth.auth_file_path.clone();
+        st.last_signature = file_signature(&auth_path);
+        st.last_refresh_marker = last_refresh;
         st.last_access_token = Some(token.clone());
         st.latest_jwt = Some(token.clone());
-        let need = if refresh_changed || token_changed {
-            if refresh_changed {
-                Need::Refresh
-            } else {
-                Need::Changed
-            }
+        if refresh_changed {
+            Need::Refresh
+        } else if token_changed {
+            Need::Changed
         } else {
             Need::Idle
-        };
-        (need, token)
+        }
     };
     // NOTE: original logic required a stored marker before treating a lone
     // token change as a refresh; markers are now always stored above, so any
@@ -597,7 +599,6 @@ fn strip_ansi(text: &str) -> String {
 
 #[tauri::command]
 pub fn check_auto_fetch(state: State<AppState>) -> Result<Option<FetchResult>, String> {
-    eprintln!("[backend] check_auto_fetch");
     let api = UsageApiClient::new();
     let now = now_secs();
     let (jwt, current, fallback_account) = {
@@ -871,13 +872,11 @@ pub fn build_monitor_state() -> (MonitorState, PathBuf) {    let storage = Usage
         }
     }
     let state = MonitorState::load(storage, auth);
-    eprintln!("[backend] ready: {} account(s), current={:?}", state.usage.len(), state.current_email);
     (state, log_path)
 }
 
 pub fn all_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool {
     tauri::generate_handler![
-        ping,
         get_snapshot,
         manual_fetch,
         fetch_backup,

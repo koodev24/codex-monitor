@@ -35,7 +35,6 @@ export interface LoginDone {
 }
 
 export const api = {
-  ping: () => invoke<string>("ping"),
   snapshot: () => invoke<Snapshot>("get_snapshot"),
   manualFetch: () => invoke<FetchResult>("manual_fetch"),
   fetchBackup: (email: string) => invoke<FetchResult>("fetch_backup", { email }),
