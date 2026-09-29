@@ -159,9 +159,9 @@ fn finalize_logout(st: &mut MonitorState, message: &str) -> AuthOutcome {
 
 #[tauri::command]
 pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
-    eprintln!("[backend] get_snapshot");
+    eprintln!("[backend] get_snapshot enter");
     let st = state_lock(&state);
-    Snapshot {
+    let snap = Snapshot {
         accounts: st.usage.clone(),
         current_email: st.current_email.clone(),
         auto_fetch: st.auto_fetch.clone(),
@@ -173,7 +173,11 @@ pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
         auth_file_exists: st.auth.auth_file_exists(),
         backup_emails: st.auth.list_backup_emails(),
         app_version: app.package_info().version.to_string(),
-    }
+    };
+    let n = snap.accounts.len();
+    drop(st);
+    eprintln!("[backend] get_snapshot ok accounts={n}");
+    snap
 }
 
 #[tauri::command]
