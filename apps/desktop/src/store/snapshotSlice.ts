@@ -107,8 +107,9 @@ export const pollOnce = createAsyncThunk<void, void, { state: RootState }>(
 
 export const manualFetch = createAsyncThunk<void, string | undefined, { state: RootState }>(
   "snapshot/manualFetch",
-  async (email, { dispatch }) => {
+  async (email, { dispatch, getState }) => {
     const key = email ? `fetch:${email}` : "fetch:all";
+    if (getState().ui.busy[key]) return;
     dispatch(setBusy({ key, on: true }));
     dispatch(setStatus(email ? `Fetching quota for ${email}…` : "Fetching quota…"));
     try {
@@ -117,9 +118,60 @@ export const manualFetch = createAsyncThunk<void, string | undefined, { state: R
       await dispatch(loadSnapshot());
       await dispatch(refreshLogs());
     } catch (e) {
-      dispatch(setStatus(`Fetch failed: ${e}`));
+      const raw = `${e}`;
+      const prefix = email ? `NO_BACKUP ${email}: ` : null;
+      const message = prefix && raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+      dispatch(setStatus(`Fetch failed: ${message}`));
     } finally {
       dispatch(setBusy({ key, on: false }));
+    }
+  },
+);
+
+export const fetchAllAccounts = createAsyncThunk<void, void, { state: RootState }>(
+  "snapshot/fetchAll",
+  async (_, { dispatch, getState }) => {
+    const KEY = "fetch:all-accounts";
+    if (getState().ui.busy[KEY]) return;
+    const snap = getState().snapshot.snap;
+    const emails = snap ? Object.keys(snap.accounts) : [];
+    if (emails.length === 0) {
+      dispatch(setStatus("No accounts to fetch."));
+      return;
+    }
+    const current = snap?.current_email ?? null;
+    const rowKeyOf = (account: string) =>
+      account === current ? "fetch:all" : `fetch:${account}`;
+    dispatch(setBusy({ key: KEY, on: true }));
+    emails.forEach((account) => dispatch(setBusy({ key: rowKeyOf(account), on: true })));
+    dispatch(setStatus(`Fetching ${emails.length} accounts…`));
+    try {
+      const results = await Promise.allSettled(
+        emails.map((account) =>
+          account === current ? api.manualFetch() : api.fetchBackup(account),
+        ),
+      );
+      let fetched = 0;
+      const failed: string[] = [];
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled") {
+          fetched++;
+        } else {
+          const raw = `${r.reason}`;
+          const prefix = `NO_BACKUP ${emails[i]}: `;
+          failed.push(`${emails[i]} (${raw.startsWith(prefix) ? raw.slice(prefix.length) : raw})`);
+        }
+      });
+      await dispatch(loadSnapshot());
+      await dispatch(refreshLogs());
+      if (failed.length === 0) {
+        dispatch(setStatus(`Fetched all ${fetched} account(s).`));
+      } else {
+        dispatch(setStatus(`Fetched ${fetched}, ${failed.length} failed: ${failed.join("; ")}`));
+      }
+    } finally {
+      emails.forEach((account) => dispatch(setBusy({ key: rowKeyOf(account), on: false })));
+      dispatch(setBusy({ key: KEY, on: false }));
     }
   },
 );

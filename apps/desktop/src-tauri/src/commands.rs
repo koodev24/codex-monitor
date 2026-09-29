@@ -102,16 +102,16 @@ struct FetchedData {
     credits: Option<ResetCreditsPayload>,
 }
 
-fn fetch_remote(
+async fn fetch_remote(
     api: &UsageApiClient,
     jwt: &str,
     fallback_account_id: Option<&str>,
 ) -> Result<FetchedData, String> {
-    let response: UsageResponse = api.fetch_usage(jwt).map_err(|e| e.to_string())?;
+    let response: UsageResponse = api.fetch_usage(jwt).await.map_err(|e| e.to_string())?;
     let account_id = response.account_id.clone().or_else(|| fallback_account_id.map(String::from));
     let mut credits = None;
     if let Some(account_id) = account_id {
-        match api.fetch_reset_credits(jwt, &account_id) {
+        match api.fetch_reset_credits(jwt, &account_id).await {
             Ok(c) => credits = Some(c),
             Err(ApiError::Unauthorized) => {}
             Err(e) => {
@@ -176,7 +176,7 @@ pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
 }
 
 #[tauri::command]
-pub fn manual_fetch(state: State<AppState>) -> Result<FetchResult, String> {
+pub async fn manual_fetch(state: State<'_, AppState>) -> Result<FetchResult, String> {
     let api = UsageApiClient::new();
     let now = now_secs();
     let (jwt, current, fallback_account) = {
@@ -190,7 +190,7 @@ pub fn manual_fetch(state: State<AppState>) -> Result<FetchResult, String> {
             .and_then(|t| t.account_id);
         (jwt, st.current_email.clone(), fallback)
     };
-    let data = fetch_remote(&api, &jwt, fallback_account.as_deref())?;
+    let data = fetch_remote(&api, &jwt, fallback_account.as_deref()).await?;
     let mut st = state_lock(&state);
     let email = apply_fetched(&mut st, data, &jwt, current.as_deref(), true, now)?;
     drop(st);
@@ -200,21 +200,30 @@ pub fn manual_fetch(state: State<AppState>) -> Result<FetchResult, String> {
 }
 
 #[tauri::command]
-pub fn fetch_backup(state: State<AppState>, email: String) -> Result<FetchResult, String> {
+pub async fn fetch_backup(state: State<'_, AppState>, email: String) -> Result<FetchResult, String> {
     let api = UsageApiClient::new();
     let refresher = AuthRefreshClient::new();
     let now = now_secs();
     let (jwt, fallback_account) = {
         let st = state_lock(&state);
-        let snap = st.auth.load_backup_snapshot(&email)?;
-        let tokens = snap.tokens.clone().ok_or_else(|| "Backup has no tokens.".to_string())?;
+        if !st.auth.backup_exists(&email) {
+            return Err(format!(
+                "NO_BACKUP {email}: No saved sign-in for {email} (backup file missing). The quota row is kept, but it cannot be fetched without signing in again."
+            ));
+        }
+        let snap = st.auth.load_backup_snapshot(&email).map_err(|e| {
+            format!("Saved sign-in for {email} is unreadable ({e}). Remove the account if it is gone.")
+        })?;
+        let tokens = snap.tokens.clone().ok_or_else(|| {
+            format!("No saved tokens for {email}. Remove the account if it is gone.")
+        })?;
         let jwt = tokens.access_token.clone().unwrap_or_default();
         if jwt.is_empty() {
-            return Err("Backup has no access token.".into());
+            return Err(format!("No saved access token for {email}. Remove the account if it is gone."));
         }
         (jwt, tokens.account_id.clone())
     };
-    match fetch_remote(&api, &jwt, fallback_account.as_deref()) {
+    match fetch_remote(&api, &jwt, fallback_account.as_deref()).await {
         Ok(data) => {
             let mut st = state_lock(&state);
             let email = apply_fetched(&mut st, data, &jwt, Some(&email), false, now)?;
@@ -224,15 +233,21 @@ pub fn fetch_backup(state: State<AppState>, email: String) -> Result<FetchResult
             Ok(FetchResult { email, message })
         }
         Err(e) if is_unauthorized(&e) => {
-            let jwt = {
+            // Refresh via a path-cloned service so the state lock is not
+            // held across .await (std MutexGuard is not Send).
+            let auth_svc = {
                 let st = state_lock(&state);
-                let refreshed = st.auth.refresh_backup_if_due(&email, &refresher, true, now)?;
-                refreshed.tokens.and_then(|t| t.access_token).unwrap_or_default()
+                AuthFileService::new(
+                    st.auth.auth_file_path.clone(),
+                    st.auth.accounts_dir.clone(),
+                )
             };
+            let refreshed = auth_svc.refresh_backup_if_due(&email, &refresher, true, now).await?;
+            let jwt = refreshed.tokens.and_then(|t| t.access_token).unwrap_or_default();
             if jwt.is_empty() {
                 return Err("Token refresh produced no access token.".into());
             }
-            let data = fetch_remote(&api, &jwt, None)?;
+            let data = fetch_remote(&api, &jwt, None).await?;
             let mut st = state_lock(&state);
             let email = apply_fetched(&mut st, data, &jwt, Some(&email), false, now_secs())?;
             st.remember_jwt(&email, jwt);
@@ -253,7 +268,7 @@ fn is_unauthorized(message: &str) -> bool {
 /// The frontend calls this on watcher events + a 5s poll (replacing the
 /// tkinter after() loop); retry backoff for MissingToken lives there too.
 #[tauri::command]
-pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
+pub async fn process_auth_file(state: State<'_, AppState>) -> Result<AuthOutcome, String> {
     let api = UsageApiClient::new();
     let now = now_secs();
     enum Need {
@@ -271,17 +286,17 @@ pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
             let msg = "Auth file removed. Signed out.".to_string();
             append_log(&state, &msg);
             let mut st = state_lock(&state);
-            return finalize_logout(&mut st, &msg);
+            return Ok(finalize_logout(&mut st, &msg));
         }
         let snapshot = match st.auth.load_snapshot() {
             Ok(s) => s,
             Err(e) => {
-                return AuthOutcome::ParseError { message: format!("Could not read auth file: {e}") }
+                return Ok(AuthOutcome::ParseError { message: format!("Could not read auth file: {e}") })
             }
         };
         let token = snapshot.tokens.clone().and_then(|t| t.access_token).unwrap_or_default();
         if token.is_empty() {
-            return AuthOutcome::MissingToken;
+            return Ok(AuthOutcome::MissingToken);
         }
         let marker = snapshot.last_refresh.clone().unwrap_or_default();
         let last_refresh = snapshot.last_refresh.clone();
@@ -290,7 +305,7 @@ pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
     };
     let (token, marker, fallback_account, last_refresh) = match ready {
         Some(v) => v,
-        None => return AuthOutcome::NoChange,
+        None => return Ok(AuthOutcome::NoChange),
     };
     // Phase 2: compute need + update markers under a second short lock.
     let need = {
@@ -314,9 +329,9 @@ pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
     // token change as a refresh; markers are now always stored above, so any
     // change fetches. Same observable behaviour without holding the lock.
 
-    match need {
+    let outcome = match need {
         Need::Idle => AuthOutcome::NoChange,
-        Need::Refresh => match fetch_remote(&api, &token, fallback_account.as_deref()) {
+        Need::Refresh => match fetch_remote(&api, &token, fallback_account.as_deref()).await {
             Ok(data) => {
                 let mut st = state_lock(&state);
                 match apply_fetched(&mut st, data, &token, None, true, now) {
@@ -331,7 +346,7 @@ pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
             }
             Err(e) => AuthOutcome::ParseError { message: e },
         },
-        Need::Changed => match fetch_remote(&api, &token, fallback_account.as_deref()) {
+        Need::Changed => match fetch_remote(&api, &token, fallback_account.as_deref()).await {
             Ok(data) => {
                 let mut st = state_lock(&state);
                 match apply_fetched(&mut st, data, &token, None, true, now) {
@@ -355,11 +370,12 @@ pub fn process_auth_file(state: State<AppState>) -> AuthOutcome {
                 }
             }
         },
-    }
+    };
+    Ok(outcome)
 }
 
 #[tauri::command]
-pub fn switch_account(state: State<AppState>, email: String) -> Result<String, String> {
+pub async fn switch_account(state: State<'_, AppState>, email: String) -> Result<String, String> {
     let current = state_lock(&state).current_email.clone();
     {
         let st = state_lock(&state);
@@ -381,7 +397,7 @@ pub fn switch_account(state: State<AppState>, email: String) -> Result<String, S
         (jwt, fallback)
     };
     let api = UsageApiClient::new();
-    let data = fetch_remote(&api, &jwt, fallback_account.as_deref())?;
+    let data = fetch_remote(&api, &jwt, fallback_account.as_deref()).await?;
     let mut st = state_lock(&state);
     let fetched = apply_fetched(&mut st, data, &jwt, Some(&email), true, now_secs())?;
     drop(st);
@@ -598,7 +614,7 @@ fn strip_ansi(text: &str) -> String {
 }
 
 #[tauri::command]
-pub fn check_auto_fetch(state: State<AppState>) -> Result<Option<FetchResult>, String> {
+pub async fn check_auto_fetch(state: State<'_, AppState>) -> Result<Option<FetchResult>, String> {
     let api = UsageApiClient::new();
     let now = now_secs();
     let (jwt, current, fallback_account) = {
@@ -612,7 +628,7 @@ pub fn check_auto_fetch(state: State<AppState>) -> Result<Option<FetchResult>, S
             .and_then(|t| t.account_id);
         (jwt, st.current_email.clone(), fallback)
     };
-    match fetch_remote(&api, &jwt, fallback_account.as_deref()) {
+    match fetch_remote(&api, &jwt, fallback_account.as_deref()).await {
         Ok(data) => {
             let mut st = state_lock(&state);
             match apply_fetched(&mut st, data, &jwt, current.as_deref(), true, now) {
@@ -764,7 +780,7 @@ fn finish_login(app: &AppHandle, state: &State<AppState>, home: &Path, end: Logi
         done(false, "Login produced no access token.".into());
         return;
     };
-    let response: UsageResponse = match api.fetch_usage(&jwt) {
+    let response: UsageResponse = match tauri::async_runtime::block_on(api.fetch_usage(&jwt)) {
         Ok(r) => r,
         Err(e) => {
             done(false, format!("Login succeeded but quota fetch failed: {e}"));
@@ -794,7 +810,7 @@ fn finish_login(app: &AppHandle, state: &State<AppState>, home: &Path, end: Logi
     st.set_current(email.clone(), jwt);
     if let Some(account_id) = response.account_id.clone() {
         let jwt = st.latest_jwt_for(Some(&email)).unwrap_or_default();
-        if let Ok(credits) = api.fetch_reset_credits(&jwt, &account_id) {
+        if let Ok(credits) = tauri::async_runtime::block_on(api.fetch_reset_credits(&jwt, &account_id)) {
             st.apply_reset_credits(&email, credits);
         }
     }

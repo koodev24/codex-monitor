@@ -90,6 +90,7 @@ import {
   cycleSort,
   doExport,
   doImport,
+  fetchAllAccounts,
   loadSnapshot,
   logout,
   manualFetch,
@@ -360,7 +361,6 @@ export default function App() {
                       {rows.map(([email, a]) => {
                         const isCurrent = email === snap?.current_email;
                         const weekly = weeklyOf(a);
-                        const fetchKey = isCurrent ? "fetch:all" : `fetch:${email}`;
                         return (
                           <TableRow
                             key={email}
@@ -388,15 +388,15 @@ export default function App() {
                             </TableCell>
                             <TableCell>
                               <span className="flex justify-end gap-0.5">
-                                <IconBtn
-                                  title={isCurrent ? "Fetch quota" : "Fetch this backup account"}
-                                  busyKey={fetchKey}
-                                  onClick={() =>
-                                    void dispatch(manualFetch(isCurrent ? undefined : email))
-                                  }
-                                >
-                                  <RefreshCw />
-                                </IconBtn>
+                                {isCurrent && (
+                                  <IconBtn
+                                    title="Fetch quota"
+                                    busyKey="fetch:all"
+                                    onClick={() => void dispatch(manualFetch(undefined))}
+                                  >
+                                    <RefreshCw />
+                                  </IconBtn>
+                                )}
                                 <IconBtn
                                   title="Reset credits"
                                   busyKey={`resets:${email}`}
@@ -503,9 +503,9 @@ export default function App() {
                   </Select>
                 </span>
                 <IconBtn
-                  title="Fetch quota now"
-                  busyKey="fetch:all"
-                  onClick={() => void dispatch(manualFetch(undefined))}
+                  title="Fetch all accounts"
+                  busyKey="fetch:all-accounts"
+                  onClick={() => void dispatch(fetchAllAccounts())}
                 >
                   <RefreshCw />
                 </IconBtn>

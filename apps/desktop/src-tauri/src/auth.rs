@@ -64,12 +64,12 @@ fn current_refresh_timestamp() -> String {
 /// Abstraction over token refresh so tests can fake it.
 /// Mirrors AuthRefreshClient.refresh_tokens.
 pub trait TokenRefresher {
-    fn refresh_tokens(&self, refresh_token: &str) -> Result<RefreshedTokens, ApiError>;
+    async fn refresh_tokens(&self, refresh_token: &str) -> Result<RefreshedTokens, ApiError>;
 }
 
 impl TokenRefresher for AuthRefreshClient {
-    fn refresh_tokens(&self, refresh_token: &str) -> Result<RefreshedTokens, ApiError> {
-        self.refresh_tokens(refresh_token)
+    async fn refresh_tokens(&self, refresh_token: &str) -> Result<RefreshedTokens, ApiError> {
+        self.refresh_tokens(refresh_token).await
     }
 }
 
@@ -285,7 +285,7 @@ impl AuthFileService {
         count
     }
 
-    fn refresh_snapshot_tokens<R: TokenRefresher>(
+    async fn refresh_snapshot_tokens<R: TokenRefresher>(
         &self,
         snapshot: &AuthFileSnapshot,
         refresher: &R,
@@ -296,7 +296,7 @@ impl AuthFileService {
             .as_deref()
             .filter(|r| !r.is_empty())
             .ok_or_else(|| "auth backup has no refresh_token".to_string())?;
-        let refreshed = refresher.refresh_tokens(rt).map_err(|e| e.to_string())?;
+        let refreshed = refresher.refresh_tokens(rt).await.map_err(|e| e.to_string())?;
         if refreshed.access_token.is_empty() {
             return Err("token refresh response has no access_token".into());
         }
@@ -314,7 +314,7 @@ impl AuthFileService {
         Ok(next)
     }
 
-    pub fn refresh_backup_if_due<R: TokenRefresher>(
+    pub async fn refresh_backup_if_due<R: TokenRefresher>(
         &self,
         email: &str,
         refresher: &R,
@@ -325,7 +325,7 @@ impl AuthFileService {
         if !force && !snapshot_needs_refresh(&snapshot, now) {
             return Ok(snapshot);
         }
-        let next = self.refresh_snapshot_tokens(&snapshot, refresher)?;
+        let next = self.refresh_snapshot_tokens(&snapshot, refresher).await?;
         self.write_backup_snapshot(email, &next)?;
         Ok(next)
     }
@@ -410,7 +410,7 @@ mod tests {
     }
 
     impl TokenRefresher for FakeRefresher {
-        fn refresh_tokens(&self, _rt: &str) -> Result<RefreshedTokens, ApiError> {
+        async fn refresh_tokens(&self, _rt: &str) -> Result<RefreshedTokens, ApiError> {
             Ok(self.tokens.clone())
         }
     }
@@ -492,8 +492,8 @@ mod tests {
         assert_eq!(svc.list_backup_emails(), vec!["a@x.y", "b@x.y"]);
     }
 
-    #[test]
-    fn refresh_due_and_force() {
+    #[tokio::test]
+    async fn refresh_due_and_force() {
         let (svc, _dir) = temp_service("refresh");
         let old = fixture_snapshot("u@x.y", "2020-01-01T00:00:00Z");
         svc.write_backup_snapshot("u@x.y", &old).unwrap();
@@ -505,17 +505,17 @@ mod tests {
             },
         };
         let now = 1_800_000_000.0;
-        let out = svc.refresh_backup_if_due("u@x.y", &fake, false, now).unwrap();
+        let out = svc.refresh_backup_if_due("u@x.y", &fake, false, now).await.unwrap();
         assert_eq!(out.tokens.unwrap().access_token.as_deref(), Some("fresh"));
 
         // Fresh snapshot is not due again.
-        let out2 = svc.refresh_backup_if_due("u@x.y", &fake, false, now + 60.0).unwrap();
+        let out2 = svc.refresh_backup_if_due("u@x.y", &fake, false, now + 60.0).await.unwrap();
         assert_eq!(
             out2.tokens.unwrap().access_token.as_deref(),
             Some("fresh")
         );
         // Force refreshes regardless.
-        let out3 = svc.refresh_backup_if_due("u@x.y", &fake, true, now + 60.0).unwrap();
+        let out3 = svc.refresh_backup_if_due("u@x.y", &fake, true, now + 60.0).await.unwrap();
         assert!(out3.last_refresh.is_some());
     }
 
