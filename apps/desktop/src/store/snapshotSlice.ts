@@ -107,8 +107,9 @@ export const pollOnce = createAsyncThunk<void, void, { state: RootState }>(
 
 export const manualFetch = createAsyncThunk<void, string | undefined, { state: RootState }>(
   "snapshot/manualFetch",
-  async (email, { dispatch }) => {
+  async (email, { dispatch, getState }) => {
     const key = email ? `fetch:${email}` : "fetch:all";
+    if (getState().ui.busy[key]) return;
     dispatch(setBusy({ key, on: true }));
     dispatch(setStatus(email ? `Fetching quota for ${email}…` : "Fetching quota…"));
     try {

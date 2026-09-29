@@ -74,8 +74,8 @@ impl From<reqwest::Error> for ApiError {
     }
 }
 
-fn client() -> Result<reqwest::blocking::Client, ApiError> {
-    reqwest::blocking::Client::builder()
+fn client() -> Result<reqwest::Client, ApiError> {
+    reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|e| ApiError::Network(e.to_string()))
@@ -95,12 +95,12 @@ impl UsageApiClient {
         }
     }
 
-    pub fn fetch_usage(&self, jwt: &str) -> Result<UsageResponse, ApiError> {
+    pub async fn fetch_usage(&self, jwt: &str) -> Result<UsageResponse, ApiError> {
         let mut req = client()?.get(&self.usage_url);
         for (k, v) in browser_headers() {
             req = req.header(k, v);
         }
-        let resp = req.bearer_auth(jwt).send()?;
+        let resp = req.bearer_auth(jwt).send().await?;
         let status = resp.status();
         if status.as_u16() == 401 {
             return Err(ApiError::Unauthorized);
@@ -108,10 +108,10 @@ impl UsageApiClient {
         if !status.is_success() {
             return Err(ApiError::Status(status.as_u16(), String::new()));
         }
-        resp.json::<UsageResponse>().map_err(|e| ApiError::Parse(e.to_string()))
+        resp.json::<UsageResponse>().await.map_err(|e| ApiError::Parse(e.to_string()))
     }
 
-    pub fn fetch_reset_credits(
+    pub async fn fetch_reset_credits(
         &self,
         jwt: &str,
         account_id: &str,
@@ -120,7 +120,7 @@ impl UsageApiClient {
         for (k, v) in browser_headers() {
             req = req.header(k, v);
         }
-        let resp = req.bearer_auth(jwt).header("ChatGPT-Account-ID", account_id).send()?;
+        let resp = req.bearer_auth(jwt).header("ChatGPT-Account-ID", account_id).send().await?;
         let status = resp.status();
         if status.as_u16() == 401 {
             return Err(ApiError::Unauthorized);
@@ -128,7 +128,7 @@ impl UsageApiClient {
         if !status.is_success() {
             return Err(ApiError::Status(status.as_u16(), String::new()));
         }
-        resp.json::<ResetCreditsPayload>().map_err(|e| ApiError::Parse(e.to_string()))
+        resp.json::<ResetCreditsPayload>().await.map_err(|e| ApiError::Parse(e.to_string()))
     }
 }
 
@@ -156,7 +156,7 @@ impl AuthRefreshClient {
         Self { refresh_url: AUTH_REFRESH_URL.into(), client_id: AUTH_REFRESH_CLIENT_ID.into() }
     }
 
-    pub fn refresh_tokens(&self, refresh_token: &str) -> Result<RefreshedTokens, ApiError> {
+    pub async fn refresh_tokens(&self, refresh_token: &str) -> Result<RefreshedTokens, ApiError> {
         let body = serde_json::json!({
             "client_id": self.client_id,
             "grant_type": "refresh_token",
@@ -166,7 +166,7 @@ impl AuthRefreshClient {
         for (k, v) in browser_headers() {
             req = req.header(k, v);
         }
-        let resp = req.header("Accept", "application/json").json(&body).send()?;
+        let resp = req.header("Accept", "application/json").json(&body).send().await?;
         let status = resp.status();
         if status.as_u16() == 401 {
             return Err(ApiError::Unauthorized);
@@ -175,7 +175,7 @@ impl AuthRefreshClient {
             return Err(ApiError::Status(status.as_u16(), String::new()));
         }
         let v: serde_json::Value =
-            resp.json().map_err(|e| ApiError::Parse(e.to_string()))?;
+            resp.json().await.map_err(|e| ApiError::Parse(e.to_string()))?;
         let access = v
             .get("access_token")
             .and_then(|t| t.as_str())
@@ -245,11 +245,11 @@ mod tests {
         UsageApiClient { usage_url: base.clone(), reset_credits_url: base }
     }
 
-    #[test]
-    fn fetch_usage_ok_and_bearer_header() {
+    #[tokio::test]
+    async fn fetch_usage_ok_and_bearer_header() {
         let mock = serve_once(200, r#"{"email":"a@b.c","rate_limit":{"primary_window":{"used_percent":10,"reset_at":5}}}"#);
         let c = client_for(&mock);
-        let r = c.fetch_usage("jwt-123").unwrap();
+        let r = c.fetch_usage("jwt-123").await.unwrap();
         assert_eq!(r.email.as_deref(), Some("a@b.c"));
         assert_eq!(
             mock.seen_auth.recv().unwrap().to_lowercase(),
@@ -257,37 +257,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fetch_usage_401_maps_to_unauthorized() {
+    #[tokio::test]
+    async fn fetch_usage_401_maps_to_unauthorized() {
         let mock = serve_once(401, "{}");
         let c = client_for(&mock);
-        assert_eq!(c.fetch_usage("bad"), Err(ApiError::Unauthorized));
+        assert_eq!(c.fetch_usage("bad").await, Err(ApiError::Unauthorized));
     }
 
-    #[test]
-    fn fetch_usage_500_and_garbage() {
+    #[tokio::test]
+    async fn fetch_usage_500_and_garbage() {
         let mock = serve_once(500, "{}");
-        assert!(matches!(client_for(&mock).fetch_usage("x"), Err(ApiError::Status(500, _))));
+        assert!(matches!(client_for(&mock).fetch_usage("x").await, Err(ApiError::Status(500, _))));
         let mock2 = serve_once(200, "not-json{{{");
-        assert!(matches!(client_for(&mock2).fetch_usage("x"), Err(ApiError::Parse(_))));
+        assert!(matches!(client_for(&mock2).fetch_usage("x").await, Err(ApiError::Parse(_))));
     }
 
-    #[test]
-    fn reset_credits_ok() {
+    #[tokio::test]
+    async fn reset_credits_ok() {
         let mock = serve_once(200, r#"{"available_count":1,"credits":[{"status":"available","expires_at":"2026-05-01T00:00:00Z"}]}"#);
         let c = client_for(&mock);
-        let r = c.fetch_reset_credits("jwt", "acct").unwrap();
+        let r = c.fetch_reset_credits("jwt", "acct").await.unwrap();
         assert_eq!(r.available_count, Some(1));
     }
 
-    #[test]
-    fn refresh_ok_and_missing_access_token() {
+    #[tokio::test]
+    async fn refresh_ok_and_missing_access_token() {
         let mock = serve_once(200, r#"{"access_token":"new-a","refresh_token":"new-r"}"#);
         let c = AuthRefreshClient {
             refresh_url: format!("http://{}", mock.addr),
             client_id: "test".into(),
         };
-        let t = c.refresh_tokens("old-r").unwrap();
+        let t = c.refresh_tokens("old-r").await.unwrap();
         assert_eq!(t.access_token, "new-a");
         assert_eq!(t.refresh_token.as_deref(), Some("new-r"));
 
@@ -296,7 +296,7 @@ mod tests {
             refresh_url: format!("http://{}", mock2.addr),
             client_id: "test".into(),
         };
-        assert!(matches!(c2.refresh_tokens("x"), Err(ApiError::Parse(_))));
+        assert!(matches!(c2.refresh_tokens("x").await, Err(ApiError::Parse(_))));
     }
 
     #[test]
