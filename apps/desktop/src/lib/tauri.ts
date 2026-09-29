@@ -57,5 +57,6 @@ export const api = {
   logout: () => invoke<string>("logout"),
   loginStart: () => invoke<string>("login_start"),
   loginCancel: () => invoke<string>("login_cancel"),
+  openLoginUrl: (url: string) => invoke<string>("open_login_url", { url }),
   restartCodex: () => invoke<string>("restart_codex"),
 };

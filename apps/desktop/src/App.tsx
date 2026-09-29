@@ -215,7 +215,15 @@ export default function App() {
       dispatch((_, getState) => {
         if (!getState().login.urlOpened) {
           dispatch(markUrlOpened());
-          void openUrl(e.payload).catch(() => undefined);
+          const url = e.payload;
+          void (async () => {
+            try {
+              dispatch(setStatus(await api.openLoginUrl(url)));
+            } catch {
+              dispatch(setStatus("Opened login page in the default browser."));
+              void openUrl(url).catch(() => undefined);
+            }
+          })();
         }
       });
     }).then((u) => unlisteners.push(u));

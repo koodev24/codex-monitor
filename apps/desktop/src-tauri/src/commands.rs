@@ -831,6 +831,45 @@ pub fn login_cancel(app: AppHandle, state: State<AppState>) -> Result<String, St
     Ok("Cancelling login…".into())
 }
 
+fn is_http_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+/// Open the Codex login URL in a private window when possible so users with
+/// several ChatGPT accounts can pick which one to sign in with. Best-effort:
+/// falls through the known macOS browsers and reports failure so the
+/// frontend can open the URL in the default browser instead.
+#[tauri::command]
+pub fn open_login_url(url: String) -> Result<String, String> {
+    let url = url.trim().to_string();
+    if !is_http_url(&url) {
+        return Err("Login URL is not a valid http(s) address.".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        const CANDIDATES: &[(&str, &[&str])] = &[
+            ("Google Chrome", &["--incognito"]),
+            ("Brave Browser", &["--incognito"]),
+            ("Microsoft Edge", &["--inprivate"]),
+            ("Arc", &["--incognito"]),
+            ("Firefox", &["-private-window"]),
+        ];
+        for (app, flags) in CANDIDATES {
+            let mut cmd = Command::new("open");
+            cmd.arg("-a").arg(app).arg("--args").args(*flags).arg(&url);
+            if cmd.status().map(|s| s.success()).unwrap_or(false) {
+                return Ok(format!("Opened login page in {app} private window."));
+            }
+        }
+        Err("No private-window browser found.".into())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        Err("Private-window open is only supported on macOS.".into())
+    }
+}
+
 #[tauri::command]
 pub fn restart_codex() -> Result<String, String> {
     #[cfg(target_os = "macos")]
@@ -913,6 +952,7 @@ pub fn all_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool {
         logout,
         login_start,
         login_cancel,
+        open_login_url,
         restart_codex,
     ]
 }
@@ -941,5 +981,15 @@ mod real_store_tests {
         };
         let text = serde_json::to_string(&snap).expect("snapshot must serialize");
         assert!(text.contains("accounts"));
+    }
+
+    #[test]
+    fn login_url_validation() {
+        assert!(is_http_url("https://auth.openai.com/authorize?x=1"));
+        assert!(is_http_url("http://localhost:1455/callback"));
+        assert!(!is_http_url("javascript:alert(1)"));
+        assert!(!is_http_url("file:///etc/passwd"));
+        assert!(!is_http_url(""));
+        assert!(open_login_url("javascript:alert(1)".into()).is_err());
     }
 }
