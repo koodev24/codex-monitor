@@ -558,10 +558,38 @@ fn augmented_path_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Locate the `codex` CLI. GUI apps on macOS do not inherit the shell
-/// PATH, so well-known install roots are scanned explicitly.
-/// Mirrors _find_codex_binary (minus the PyInstaller-bundle branches,
-/// which do not exist in the Tauri build).
+fn sidecar_triple() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
+        ("windows", "aarch64") => Some("aarch64-pc-windows-msvc"),
+        _ => None,
+    }
+}
+
+/// Path of the `codex` CLI shipped inside the app bundle (externalBin
+/// sidecar, staged by scripts/fetch-codex-sidecar.mjs). Absent in dev mode,
+/// where the system-wide CLI is used instead.
+pub fn bundled_codex_binary(app: &AppHandle) -> Option<PathBuf> {
+    let triple = sidecar_triple()?;
+    let exe = if cfg!(windows) { ".exe" } else { "" };
+    let candidate = app
+        .path()
+        .resource_dir()
+        .ok()?
+        .join("binaries")
+        .join(format!("codex-{triple}{exe}"));
+    candidate.is_file().then_some(candidate)
+}
+
+/// Locate the `codex` CLI: bundled sidecar first, then the
+/// CODEX_MONITOR_CODEX_BIN override, then PATH plus well-known install
+/// roots (GUI apps on macOS do not inherit the shell PATH).
+/// Mirrors _find_codex_binary, with the PyInstaller-bundle branch replaced
+/// by the Tauri externalBin sidecar.
 pub fn find_codex_binary() -> Option<PathBuf> {
     if let Ok(env_bin) = std::env::var("CODEX_MONITOR_CODEX_BIN") {
         let p = PathBuf::from(&env_bin);
@@ -656,7 +684,7 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
     if state.login.lock().unwrap().is_some() {
         return Err("A login is already in progress.".into());
     }
-    let codex_bin = find_codex_binary().ok_or_else(|| {
+    let codex_bin = bundled_codex_binary(&app).or_else(find_codex_binary).ok_or_else(|| {
         "Could not find the `codex` CLI. Install it (npm i -g @openai/codex) or set CODEX_MONITOR_CODEX_BIN.".to_string()
     })?;
     let home = {
@@ -941,5 +969,11 @@ mod real_store_tests {
         };
         let text = serde_json::to_string(&snap).expect("snapshot must serialize");
         assert!(text.contains("accounts"));
+    }
+
+    #[test]
+    fn sidecar_triple_matches_external_bin_naming() {
+        let triple = sidecar_triple().expect("test host must map to a sidecar triple");
+        assert!(triple.starts_with(std::env::consts::ARCH));
     }
 }
