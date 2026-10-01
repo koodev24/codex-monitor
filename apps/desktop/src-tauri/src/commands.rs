@@ -641,6 +641,41 @@ fn extract_url(line: &str) -> Option<String> {
     (!url.is_empty()).then(|| url.to_string())
 }
 
+/// Only remote http(s) addresses are offered as the login URL. The CLI also
+/// prints its local callback server (localhost:1455), which must never win
+/// the first-URL-wins race in the login dialog.
+fn login_url_is_actionable(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    (lower.starts_with("http://") || lower.starts_with("https://"))
+        && !lower.contains("localhost")
+        && !lower.contains("127.0.0.1")
+        && !lower.contains("[::1]")
+}
+
+/// Install no-op `open` / `xdg-open` shims for the login child so the CLI's
+/// own browser pop cannot fire. It shells out to those helpers (BROWSER env
+/// is ignored on macOS); shadowing them on PATH is deterministic, whereas
+/// output inspection can never prove a popup did not happen.
+#[cfg(unix)]
+fn stub_browser_open(home: &Path) -> Option<PathBuf> {
+    let dir = home.join("binstub");
+    if fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    for name in ["open", "xdg-open"] {
+        let path = dir.join(name);
+        if fs::write(&path, "#!/bin/sh\nexit 0\n").is_err() {
+            return None;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
+        }
+    }
+    Some(dir)
+}
+
 fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -727,13 +762,24 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
         c.arg("login");
         c
     };
-    // BROWSER=true turns the CLI's own browser pop into a no-op so only the
-    // dialog's Copy URL / Open browser buttons open anything.
+    // The CLI pops the default browser on its own (BROWSER env is ignored on
+    // macOS), so shadow `open` on the child's PATH with a no-op shim. Only
+    // the dialog's Copy URL / Open browser buttons then open anything.
     cmd.env("CODEX_HOME", &home)
         .env("BROWSER", "true")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
+    #[cfg(unix)]
+    if let Some(stub) = stub_browser_open(&home) {
+        let mut dirs = vec![stub];
+        if let Some(path) = std::env::var_os("PATH") {
+            dirs.extend(std::env::split_paths(&path));
+        }
+        if let Ok(joined) = std::env::join_paths(dirs) {
+            cmd.env("PATH", joined);
+        }
+    }
     let mut child = cmd.spawn().map_err(|e| format!("Failed to start login: {e}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -768,7 +814,7 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
                     continue;
                 }
                 let _ = app_c.emit("codex-login-output", clean.clone());
-                if let Some(url) = extract_url(&clean) {
+                if let Some(url) = extract_url(&clean).filter(|u| login_url_is_actionable(u)) {
                     let _ = app_c.emit("codex-login-url", url);
                 }
                 if cancel_c.load(Ordering::SeqCst) {
@@ -1060,6 +1106,14 @@ mod real_store_tests {
         assert!(mark_seen(&seen, "hello world"));
         assert!(mark_seen(&seen, "  hello   world  "));
         assert!(!mark_seen(&seen, "other line"));
+    }
+
+    #[test]
+    fn login_url_skips_loopback() {
+        assert!(!login_url_is_actionable("http://localhost:1455"));
+        assert!(!login_url_is_actionable("http://127.0.0.1:1455/auth/callback"));
+        assert!(login_url_is_actionable("https://auth.openai.com/oauth/authorize?a=1"));
+        assert!(!login_url_is_actionable("javascript:alert(1)"));
     }
 
     #[test]
