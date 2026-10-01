@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Archive,
   ArchiveRestore,
@@ -79,10 +78,13 @@ import { useAppDispatch, useAppSelector } from "./store/hooks";
 import {
   appendLines,
   cancelLogin,
+  copyLoginUrl,
   markUrlOpened,
+  openLoginUrlOrDefault,
   resetLines,
   setDone,
   setOpen as setLoginOpen,
+  setUrl,
   startLogin,
 } from "./store/loginSlice";
 import { clearLogs, refreshLogs, toggleLogs } from "./store/logsSlice";
@@ -183,6 +185,7 @@ export default function App() {
   const logs = useAppSelector((s) => s.logs.entries);
   const loginOpen = useAppSelector((s) => s.login.open);
   const loginLines = useAppSelector((s) => s.login.lines);
+  const loginUrl = useAppSelector((s) => s.login.url);
   const loginDone = useAppSelector((s) => s.login.done);
   const loginStarting = useAppSelector((s) => s.login.starting);
   const confirmBusy = useAppSelector(selectBusy("confirm"));
@@ -215,15 +218,8 @@ export default function App() {
       dispatch((_, getState) => {
         if (!getState().login.urlOpened) {
           dispatch(markUrlOpened());
-          const url = e.payload;
-          void (async () => {
-            try {
-              dispatch(setStatus(await api.openLoginUrl(url)));
-            } catch {
-              dispatch(setStatus("Opened login page in the default browser."));
-              void openUrl(url).catch(() => undefined);
-            }
-          })();
+          dispatch(setUrl(e.payload));
+          void dispatch(openLoginUrlOrDefault(e.payload));
         }
       });
     }).then((u) => unlisteners.push(u));
@@ -636,10 +632,26 @@ export default function App() {
               <DialogTitle>Add account — Codex login</DialogTitle>
             </DialogHeader>
             <ScrollArea className="h-56 rounded-md border bg-slate-950">
-              <pre className="whitespace-pre-wrap p-2 text-xs text-slate-200">
+              <pre className="whitespace-pre-wrap break-all p-2 text-xs text-slate-200 select-text">
                 {loginLines.length === 0 ? "Starting login…" : loginLines.join("\n")}
               </pre>
             </ScrollArea>
+            {loginUrl && !loginDone && (
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="w-full truncate text-xs text-muted-foreground" title={loginUrl}>
+                  Login page ready — copy it into a private window, or open it directly.
+                </p>
+                <Button variant="outline" onClick={() => void dispatch(copyLoginUrl(loginUrl))}>
+                  <Copy /> Copy URL
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => void dispatch(openLoginUrlOrDefault(loginUrl))}
+                >
+                  Open browser
+                </Button>
+              </div>
+            )}
             <DialogFooter>
               {loginDone ? (
                 <Button onClick={() => dispatch(setLoginOpen(false))}>Close</Button>

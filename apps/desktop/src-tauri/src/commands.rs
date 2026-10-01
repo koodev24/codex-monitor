@@ -618,6 +618,16 @@ pub fn find_codex_binary() -> Option<PathBuf> {
     None
 }
 
+fn extract_url(line: &str) -> Option<String> {
+    let start = line.find("https://").or_else(|| line.find("http://"))?;
+    let end = line[start..]
+        .find(|c: char| c.is_whitespace())
+        .map(|i| start + i)
+        .unwrap_or(line.len());
+    let url = line[start..end].trim_end_matches(['.', ',', ')', ';', ']']);
+    (!url.is_empty()).then(|| url.to_string())
+}
+
 fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -709,6 +719,9 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
         Some(LoginSession { home: home.clone(), cancel: cancel.clone() });
 
     let app_out = app.clone();
+    // The CLI mirrors everything to both stdout and stderr; skip repeats so
+    // each line is shown (and each URL opened) once.
+    let last_line: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mut streams: Vec<Box<dyn Read + Send>> = Vec::new();
     if let Some(s) = stdout {
         streams.push(Box::new(s));
@@ -719,15 +732,23 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
     for stream in streams {
         let app_c = app_out.clone();
         let cancel_c = cancel.clone();
+        let last_c = last_line.clone();
         thread::spawn(move || {
             for line in BufReader::new(stream).lines().map_while(Result::ok) {
                 let clean = strip_ansi(&line);
                 if clean.trim().is_empty() {
                     continue;
                 }
+                let duplicate = last_c
+                    .lock()
+                    .map(|mut seen| seen.replace(clean.clone()) == Some(clean.clone()))
+                    .unwrap_or(false);
+                if duplicate {
+                    continue;
+                }
                 let _ = app_c.emit("codex-login-output", clean.clone());
-                if clean.contains("http") {
-                    let _ = app_c.emit("codex-login-url", clean.clone());
+                if let Some(url) = extract_url(&clean) {
+                    let _ = app_c.emit("codex-login-url", url);
                 }
                 if cancel_c.load(Ordering::SeqCst) {
                     break;
@@ -1009,6 +1030,19 @@ mod real_store_tests {
         };
         let text = serde_json::to_string(&snap).expect("snapshot must serialize");
         assert!(text.contains("accounts"));
+    }
+
+    #[test]
+    fn login_url_extraction() {
+        assert_eq!(extract_url("no url here"), None);
+        assert_eq!(
+            extract_url("navigate to https://auth.openai.com/oauth/authorize?a=1 to continue.").as_deref(),
+            Some("https://auth.openai.com/oauth/authorize?a=1")
+        );
+        assert_eq!(
+            extract_url("http://localhost:1455/callback").as_deref(),
+            Some("http://localhost:1455/callback")
+        );
     }
 
     #[test]
