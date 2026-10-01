@@ -714,20 +714,26 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
         let st = state_lock(&state);
         st.auth.create_login_codex_home()?
     };
-    // Device authorization: the CLI prints a URL plus a one-time code and
-    // never opens a browser itself, so the user stays in control (incognito
-    // copy-paste or the dialog's Open button). Tokens land in the isolated
-    // CODEX_HOME auth.json exactly like the default flow.
+    // Plain browser OAuth (localhost callback). Device authorization is
+    // deliberately not used: it registers the machine as a device on the
+    // user's Codex account. The CLI may pop the default browser on its own;
+    // the dialog's Copy URL button covers the incognito flow instead.
     let mut cmd = if cfg!(windows) && codex_bin.extension().map(|e| e == "cmd").unwrap_or(false) {
         let mut c = Command::new("cmd");
-        c.args(["/c", &codex_bin.to_string_lossy(), "login", "--device-auth"]);
+        c.args(["/c", &codex_bin.to_string_lossy(), "login"]);
         c
     } else {
         let mut c = Command::new(&codex_bin);
-        c.args(["login", "--device-auth"]);
+        c.arg("login");
         c
     };
-    cmd.env("CODEX_HOME", &home).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
+    // BROWSER=true turns the CLI's own browser pop into a no-op so only the
+    // dialog's Copy URL / Open browser buttons open anything.
+    cmd.env("CODEX_HOME", &home)
+        .env("BROWSER", "true")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
     let mut child = cmd.spawn().map_err(|e| format!("Failed to start login: {e}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
