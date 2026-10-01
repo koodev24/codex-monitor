@@ -219,7 +219,7 @@ export default function App() {
         if (!getState().login.urlOpened) {
           dispatch(markUrlOpened());
           dispatch(setUrl(e.payload));
-          void dispatch(openLoginUrlOrDefault(e.payload));
+          dispatch(setStatus("Login page ready — copy the URL or open it below."));
         }
       });
     }).then((u) => unlisteners.push(u));
@@ -631,14 +631,14 @@ export default function App() {
             <DialogHeader>
               <DialogTitle>Add account — Codex login</DialogTitle>
             </DialogHeader>
-            <ScrollArea className="h-56 rounded-md border bg-slate-950">
-              <pre className="whitespace-pre-wrap break-all p-2 text-xs text-slate-200 select-text">
+            <ScrollArea className="h-56 w-full min-w-0 overflow-hidden rounded-md border bg-slate-950">
+              <pre className="max-w-full whitespace-pre-wrap break-all p-2 text-xs text-slate-200 select-text">
                 {loginLines.length === 0 ? "Starting login…" : loginLines.join("\n")}
               </pre>
             </ScrollArea>
             {loginUrl && !loginDone && (
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="w-full truncate text-xs text-muted-foreground" title={loginUrl}>
+              <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+                <p className="w-full min-w-0 truncate text-xs text-muted-foreground" title={loginUrl}>
                   Login page ready — copy it into a private window, or open it directly.
                 </p>
                 <Button variant="outline" onClick={() => void dispatch(copyLoginUrl(loginUrl))}>
