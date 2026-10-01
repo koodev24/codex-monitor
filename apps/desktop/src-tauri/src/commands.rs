@@ -618,6 +618,19 @@ pub fn find_codex_binary() -> Option<PathBuf> {
     None
 }
 
+fn mark_seen(seen: &Mutex<std::collections::VecDeque<String>>, line: &str) -> bool {
+    let key: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut guard = seen.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.contains(&key) {
+        return true;
+    }
+    guard.push_back(key);
+    while guard.len() > 50 {
+        guard.pop_front();
+    }
+    false
+}
+
 fn extract_url(line: &str) -> Option<String> {
     let start = line.find("https://").or_else(|| line.find("http://"))?;
     let end = line[start..]
@@ -701,13 +714,17 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
         let st = state_lock(&state);
         st.auth.create_login_codex_home()?
     };
+    // Device authorization: the CLI prints a URL plus a one-time code and
+    // never opens a browser itself, so the user stays in control (incognito
+    // copy-paste or the dialog's Open button). Tokens land in the isolated
+    // CODEX_HOME auth.json exactly like the default flow.
     let mut cmd = if cfg!(windows) && codex_bin.extension().map(|e| e == "cmd").unwrap_or(false) {
         let mut c = Command::new("cmd");
-        c.args(["/c", &codex_bin.to_string_lossy(), "login"]);
+        c.args(["/c", &codex_bin.to_string_lossy(), "login", "--device-auth"]);
         c
     } else {
         let mut c = Command::new(&codex_bin);
-        c.arg("login");
+        c.args(["login", "--device-auth"]);
         c
     };
     cmd.env("CODEX_HOME", &home).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
@@ -719,9 +736,11 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
         Some(LoginSession { home: home.clone(), cancel: cancel.clone() });
 
     let app_out = app.clone();
-    // The CLI mirrors everything to both stdout and stderr; skip repeats so
-    // each line is shown (and each URL opened) once.
-    let last_line: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // The CLI mirrors everything to both stdout and stderr (sometimes with
+    // differing whitespace), so remember a window of normalized recent lines
+    // and skip repeats. Each line is shown once.
+    let seen: Arc<Mutex<std::collections::VecDeque<String>>> =
+        Arc::new(Mutex::new(std::collections::VecDeque::new()));
     let mut streams: Vec<Box<dyn Read + Send>> = Vec::new();
     if let Some(s) = stdout {
         streams.push(Box::new(s));
@@ -732,18 +751,14 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
     for stream in streams {
         let app_c = app_out.clone();
         let cancel_c = cancel.clone();
-        let last_c = last_line.clone();
+        let seen_c = seen.clone();
         thread::spawn(move || {
             for line in BufReader::new(stream).lines().map_while(Result::ok) {
                 let clean = strip_ansi(&line);
                 if clean.trim().is_empty() {
                     continue;
                 }
-                let duplicate = last_c
-                    .lock()
-                    .map(|mut seen| seen.replace(clean.clone()) == Some(clean.clone()))
-                    .unwrap_or(false);
-                if duplicate {
+                if mark_seen(&seen_c, &clean) {
                     continue;
                 }
                 let _ = app_c.emit("codex-login-output", clean.clone());
@@ -1030,6 +1045,15 @@ mod real_store_tests {
         };
         let text = serde_json::to_string(&snap).expect("snapshot must serialize");
         assert!(text.contains("accounts"));
+    }
+
+    #[test]
+    fn login_output_dedupe() {
+        let seen = Mutex::new(std::collections::VecDeque::new());
+        assert!(!mark_seen(&seen, "hello  world"));
+        assert!(mark_seen(&seen, "hello world"));
+        assert!(mark_seen(&seen, "  hello   world  "));
+        assert!(!mark_seen(&seen, "other line"));
     }
 
     #[test]

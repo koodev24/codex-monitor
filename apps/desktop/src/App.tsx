@@ -78,6 +78,7 @@ import { useAppDispatch, useAppSelector } from "./store/hooks";
 import {
   appendLines,
   cancelLogin,
+  copyLoginCode,
   copyLoginUrl,
   markUrlOpened,
   openLoginUrlOrDefault,
@@ -186,6 +187,13 @@ export default function App() {
   const loginOpen = useAppSelector((s) => s.login.open);
   const loginLines = useAppSelector((s) => s.login.lines);
   const loginUrl = useAppSelector((s) => s.login.url);
+  const loginCode = useMemo(() => {
+    for (const line of loginLines) {
+      const m = line.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
+      if (m) return m[0];
+    }
+    return null;
+  }, [loginLines]);
   const loginDone = useAppSelector((s) => s.login.done);
   const loginStarting = useAppSelector((s) => s.login.starting);
   const confirmBusy = useAppSelector(selectBusy("confirm"));
@@ -650,6 +658,11 @@ export default function App() {
                 >
                   Open browser
                 </Button>
+                {loginCode && (
+                  <Button variant="outline" onClick={() => void dispatch(copyLoginCode(loginCode))}>
+                    <Copy /> Copy code {loginCode}
+                  </Button>
+                )}
               </div>
             )}
             <DialogFooter>
