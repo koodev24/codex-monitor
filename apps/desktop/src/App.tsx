@@ -214,30 +214,49 @@ export default function App() {
       void dispatch(pollOnce());
       void dispatch(refreshLogs());
     }, 5000);
+    // StrictMode mounts, unmounts, and remounts this effect while the
+    // listen() promises are still pending; without the cancelled flag the
+    // first set of listeners never unsubscribes and every event fires twice.
+    let cancelled = false;
     const unlisteners: Array<() => void> = [];
-    listen("auth-file-changed", () => {
-      void dispatch(pollOnce());
-      void dispatch(refreshLogs());
-    }).then((u) => unlisteners.push(u));
-    listen<string>("codex-login-output", (e) => {
-      dispatch(appendLines([e.payload]));
-    }).then((u) => unlisteners.push(u));
-    listen<string>("codex-login-url", (e) => {
-      dispatch((_, getState) => {
-        if (!getState().login.urlOpened) {
-          dispatch(markUrlOpened());
-          dispatch(setUrl(e.payload));
-          dispatch(setStatus("Login page ready — copy the URL or open it below."));
-        }
+    const track = (p: Promise<() => void>) => {
+      void p.then((u) => {
+        if (cancelled) u();
+        else unlisteners.push(u);
       });
-    }).then((u) => unlisteners.push(u));
-    listen<{ ok: boolean; message: string }>("codex-login-done", (e) => {
-      dispatch(setDone(e.payload.message));
-      dispatch(setStatus(e.payload.message));
-      void dispatch(loadSnapshot());
-      void dispatch(refreshLogs());
-    }).then((u) => unlisteners.push(u));
+    };
+    track(
+      listen("auth-file-changed", () => {
+        void dispatch(pollOnce());
+        void dispatch(refreshLogs());
+      }),
+    );
+    track(
+      listen<string>("codex-login-output", (e) => {
+        dispatch(appendLines([e.payload]));
+      }),
+    );
+    track(
+      listen<string>("codex-login-url", (e) => {
+        dispatch((_, getState) => {
+          if (!getState().login.urlOpened) {
+            dispatch(markUrlOpened());
+            dispatch(setUrl(e.payload));
+            dispatch(setStatus("Login page ready — copy the URL or open it below."));
+          }
+        });
+      }),
+    );
+    track(
+      listen<{ ok: boolean; message: string }>("codex-login-done", (e) => {
+        dispatch(setDone(e.payload.message));
+        dispatch(setStatus(e.payload.message));
+        void dispatch(loadSnapshot());
+        void dispatch(refreshLogs());
+      }),
+    );
     return () => {
+      cancelled = true;
       window.clearInterval(id);
       unlisteners.forEach((u) => u());
     };

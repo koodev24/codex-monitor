@@ -110,7 +110,12 @@ const loginSlice = createSlice({
       state.url = action.payload;
     },
     appendLines(state, action: { payload: string[] }) {
-      state.lines = [...state.lines, ...action.payload].slice(-200);
+      for (const line of action.payload) {
+        if (line !== state.lines[state.lines.length - 1]) {
+          state.lines.push(line);
+        }
+      }
+      state.lines = state.lines.slice(-200);
     },
     markUrlOpened(state) {
       state.urlOpened = true;
