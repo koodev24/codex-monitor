@@ -571,18 +571,18 @@ fn sidecar_triple() -> Option<&'static str> {
 }
 
 /// Path of the `codex` CLI shipped inside the app bundle (externalBin
-/// sidecar, staged by scripts/fetch-codex-sidecar.mjs). Absent in dev mode,
-/// where the system-wide CLI is used instead.
+/// sidecar, staged by scripts/fetch-codex-sidecar.mjs). In dev mode the
+/// bundle does not exist, so the staged source dir is checked instead.
 pub fn bundled_codex_binary(app: &AppHandle) -> Option<PathBuf> {
     let triple = sidecar_triple()?;
     let exe = if cfg!(windows) { ".exe" } else { "" };
-    let candidate = app
-        .path()
-        .resource_dir()
-        .ok()?
-        .join("binaries")
-        .join(format!("codex-{triple}{exe}"));
-    candidate.is_file().then_some(candidate)
+    let file = format!("codex-{triple}{exe}");
+    let mut candidates = Vec::new();
+    if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join("binaries").join(&file));
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries").join(&file));
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 /// Locate the `codex` CLI: bundled sidecar first, then the
