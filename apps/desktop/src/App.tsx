@@ -186,6 +186,7 @@ export default function App() {
   const loginOpen = useAppSelector((s) => s.login.open);
   const loginLines = useAppSelector((s) => s.login.lines);
   const loginUrl = useAppSelector((s) => s.login.url);
+  const fetchFailed = useAppSelector((s) => s.snapshot.fetchFailed);
   const loginDone = useAppSelector((s) => s.login.done);
   const loginStarting = useAppSelector((s) => s.login.starting);
   const confirmBusy = useAppSelector(selectBusy("confirm"));
@@ -243,6 +244,7 @@ export default function App() {
       listen<{ ok: boolean; message: string }>("codex-login-done", (e) => {
         dispatch(setDone(e.payload.message));
         dispatch(setStatus(e.payload.message));
+        if (e.payload.ok) dispatch(setLoginOpen(false));
         void dispatch(loadSnapshot());
         void dispatch(refreshLogs());
       }),
@@ -411,11 +413,13 @@ export default function App() {
                             </TableCell>
                             <TableCell>
                               <span className="flex justify-end gap-0.5">
-                                {isCurrent && (
+                                {(isCurrent || !fetchFailed[email]) && (
                                   <IconBtn
-                                    title="Fetch quota"
-                                    busyKey="fetch:all"
-                                    onClick={() => void dispatch(manualFetch(undefined))}
+                                    title={isCurrent ? "Fetch quota" : "Fetch this backup account"}
+                                    busyKey={isCurrent ? "fetch:all" : `fetch:${email}`}
+                                    onClick={() =>
+                                      void dispatch(manualFetch(isCurrent ? undefined : email))
+                                    }
                                   >
                                     <RefreshCw />
                                   </IconBtn>
