@@ -129,7 +129,7 @@ function useTheme() {
 }
 
 function Spin({ className }: { className?: string }) {
-  return <Loader2 aria-hidden className={`cm-spin ${className ?? ""}`} />;
+  return <Loader2 className={`animate-spin ${className ?? ""}`} />;
 }
 
 function IconBtn({
