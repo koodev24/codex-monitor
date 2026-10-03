@@ -471,12 +471,15 @@ export default function App() {
 
           <ResizablePanel defaultSize={38} minSize={18}>
             <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-2">
-              <p className="truncate px-1 text-xs text-muted-foreground" title={status}>
+              <p
+                className="shrink-0 truncate px-1 text-xs text-muted-foreground"
+                title={status}
+              >
                 {anyBusy ? "Working… " : ""}
                 {updateProgress !== null ? `Downloading update ${updateProgress}%… ` : ""}
                 {status}
               </p>
-              <div className="flex flex-wrap items-center gap-1">
+              <div className="flex shrink-0 flex-wrap items-center gap-1">
                 <IconBtn title="Copy status" onClick={() => void navigator.clipboard.writeText(status)}>
                   <Copy />
                 </IconBtn>
@@ -569,7 +572,7 @@ export default function App() {
                 </IconBtn>
               </div>
               {logsOpen && (
-                <ScrollArea className="min-h-40 flex-1 rounded-md border bg-muted/30">
+                <ScrollArea className="min-h-0 flex-1 rounded-md border bg-muted/30">
                   <pre className="whitespace-pre-wrap p-2 text-xs text-muted-foreground">
                     {logs.length === 0 ? "(no log entries yet)" : logs.join("\n")}
                   </pre>
