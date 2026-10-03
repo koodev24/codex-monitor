@@ -34,18 +34,6 @@ export const openLoginUrlOrDefault = createAsyncThunk<void, string, { state: Roo
   },
 );
 
-export const copyLoginCode = createAsyncThunk<void, string, { state: RootState }>(
-  "login/copyCode",
-  async (code, { dispatch }) => {
-    try {
-      await navigator.clipboard.writeText(code);
-      dispatch(setStatus("One-time code copied — enter it in the browser."));
-    } catch {
-      dispatch(setStatus("Could not copy the code. Select it from the log above."));
-    }
-  },
-);
-
 export const copyLoginUrl = createAsyncThunk<void, string, { state: RootState }>(
   "login/copyUrl",
   async (url, { dispatch }) => {

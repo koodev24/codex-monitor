@@ -3,6 +3,7 @@ use tauri::Emitter;
 pub mod api;
 pub mod auth;
 pub mod commands;
+pub mod oauth_login;
 pub mod formatters;
 #[cfg(feature = "legacy-migrate")]
 pub mod legacy;

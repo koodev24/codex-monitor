@@ -1,7 +1,6 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -11,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::api::{ApiError, AuthRefreshClient, UsageApiClient};
 use crate::auth::{AuthFileService, HashMapEmailSnapshots};
-use crate::models::{ResetCreditsPayload, UsageMap, UsageResponse};
+use crate::models::{AuthFileSnapshot, AuthTokens, ResetCreditsPayload, UsageMap, UsageResponse};
 use crate::state::{AUTO_FETCH_OPTIONS, MonitorState, now_secs};
 use crate::storage::UsageStorage;
 use crate::watcher::file_signature;
@@ -25,6 +24,9 @@ pub struct AppState {
 pub struct LoginSession {
     pub home: PathBuf,
     pub cancel: Arc<AtomicBool>,
+    pub outcome: crate::oauth_login::CallbackOutcome,
+    pub verifier: String,
+    pub port: u16,
 }
 
 #[derive(Serialize)]
@@ -536,169 +538,6 @@ pub fn logout(state: State<AppState>) -> Result<String, String> {
     Ok(message)
 }
 
-fn augmented_path_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        for extra in [
-            PathBuf::from("/usr/local/bin"),
-            PathBuf::from("/opt/homebrew/bin"),
-            home.join(".local/bin"),
-            home.join(".bun/bin"),
-            home.join(".volta/bin"),
-            home.join(".npm-global/bin"),
-            home.join("bin"),
-        ] {
-            if !dirs.contains(&extra) {
-                dirs.push(extra);
-            }
-        }
-    }
-    dirs
-}
-
-fn sidecar_triple() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
-        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
-        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
-        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
-        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
-        ("windows", "aarch64") => Some("aarch64-pc-windows-msvc"),
-        _ => None,
-    }
-}
-
-/// Path of the `codex` CLI shipped inside the app bundle (externalBin
-/// sidecar, staged by scripts/fetch-codex-sidecar.mjs). In dev mode the
-/// bundle does not exist, so the staged source dir is checked instead.
-pub fn bundled_codex_binary(app: &AppHandle) -> Option<PathBuf> {
-    let triple = sidecar_triple()?;
-    let exe = if cfg!(windows) { ".exe" } else { "" };
-    let file = format!("codex-{triple}{exe}");
-    let mut candidates = Vec::new();
-    if let Ok(dir) = app.path().resource_dir() {
-        candidates.push(dir.join("binaries").join(&file));
-    }
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries").join(&file));
-    candidates.into_iter().find(|p| p.is_file())
-}
-
-/// Locate the `codex` CLI: bundled sidecar first, then the
-/// CODEX_MONITOR_CODEX_BIN override, then PATH plus well-known install
-/// roots (GUI apps on macOS do not inherit the shell PATH).
-/// Mirrors _find_codex_binary, with the PyInstaller-bundle branch replaced
-/// by the Tauri externalBin sidecar.
-pub fn find_codex_binary() -> Option<PathBuf> {
-    if let Ok(env_bin) = std::env::var("CODEX_MONITOR_CODEX_BIN") {
-        let p = PathBuf::from(&env_bin);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    let names: &[&str] = if cfg!(windows) { &["codex.exe", "codex.cmd"] } else { &["codex"] };
-    for dir in augmented_path_dirs() {
-        for name in names {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(md) = fs::metadata(&candidate) {
-                        if md.permissions().mode() & 0o111 == 0 {
-                            let _ = fs::set_permissions(&candidate, fs::Permissions::from_mode(0o755));
-                        }
-                    }
-                }
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn mark_seen(seen: &Mutex<std::collections::VecDeque<String>>, line: &str) -> bool {
-    let key: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut guard = seen.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.contains(&key) {
-        return true;
-    }
-    guard.push_back(key);
-    while guard.len() > 50 {
-        guard.pop_front();
-    }
-    false
-}
-
-fn extract_url(line: &str) -> Option<String> {
-    let start = line.find("https://").or_else(|| line.find("http://"))?;
-    let end = line[start..]
-        .find(|c: char| c.is_whitespace())
-        .map(|i| start + i)
-        .unwrap_or(line.len());
-    let url = line[start..end].trim_end_matches(['.', ',', ')', ';', ']']);
-    (!url.is_empty()).then(|| url.to_string())
-}
-
-/// Only remote http(s) addresses are offered as the login URL. The CLI also
-/// prints its local callback server (localhost:1455), which must never win
-/// the first-URL-wins race in the login dialog.
-fn login_url_is_actionable(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    (lower.starts_with("http://") || lower.starts_with("https://"))
-        && !lower.contains("localhost")
-        && !lower.contains("127.0.0.1")
-        && !lower.contains("[::1]")
-}
-
-/// Install no-op `open` / `xdg-open` shims for the login child so the CLI's
-/// own browser pop cannot fire. It shells out to those helpers (BROWSER env
-/// is ignored on macOS); shadowing them on PATH is deterministic, whereas
-/// output inspection can never prove a popup did not happen.
-#[cfg(unix)]
-fn stub_browser_open(home: &Path) -> Option<PathBuf> {
-    let dir = home.join("binstub");
-    if fs::create_dir_all(&dir).is_err() {
-        return None;
-    }
-    for name in ["open", "xdg-open"] {
-        let path = dir.join(name);
-        if fs::write(&path, "#!/bin/sh\nexit 0\n").is_err() {
-            return None;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
-        }
-    }
-    Some(dir)
-}
-
-fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for ch in chars.by_ref() {
-                    if ch.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        if c == '\r' {
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
 #[tauri::command]
 pub async fn check_auto_fetch(state: State<'_, AppState>) -> Result<Option<FetchResult>, String> {
     let api = UsageApiClient::new();
@@ -742,196 +581,215 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
     if state.login.lock().unwrap().is_some() {
         return Err("A login is already in progress.".into());
     }
-    let codex_bin = bundled_codex_binary(&app).or_else(find_codex_binary).ok_or_else(|| {
-        "Could not find the `codex` CLI. Install it (npm i -g @openai/codex) or set CODEX_MONITOR_CODEX_BIN.".to_string()
-    })?;
     let home = {
         let st = state_lock(&state);
         st.auth.create_login_codex_home()?
     };
-    // Plain browser OAuth (localhost callback). Device authorization is
-    // deliberately not used: it registers the machine as a device on the
-    // user's Codex account. The CLI may pop the default browser on its own;
-    // the dialog's Copy URL button covers the incognito flow instead.
-    let mut cmd = if cfg!(windows) && codex_bin.extension().map(|e| e == "cmd").unwrap_or(false) {
-        let mut c = Command::new("cmd");
-        c.args(["/c", &codex_bin.to_string_lossy(), "login"]);
-        c
-    } else {
-        let mut c = Command::new(&codex_bin);
-        c.arg("login");
-        c
-    };
-    // The CLI pops the default browser on its own (BROWSER env is ignored on
-    // macOS), so shadow `open` on the child's PATH with a no-op shim. Only
-    // the dialog's Copy URL / Open browser buttons then open anything.
-    cmd.env("CODEX_HOME", &home)
-        .env("BROWSER", "true")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::null());
-    #[cfg(unix)]
-    if let Some(stub) = stub_browser_open(&home) {
-        let mut dirs = vec![stub];
-        if let Some(path) = std::env::var_os("PATH") {
-            dirs.extend(std::env::split_paths(&path));
-        }
-        if let Ok(joined) = std::env::join_paths(dirs) {
-            cmd.env("PATH", joined);
-        }
-    }
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to start login: {e}"))?;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    // Native streamlined OAuth: no CLI, no scraping. The sign-in URL below
+    // matches the official Codex Desktop format; the loopback server catches
+    // the callback and the tokens are exchanged in-process.
+    let pkce = crate::oauth_login::generate_pkce();
+    let oauth_state = crate::oauth_login::generate_state();
+    let (port, outcome) =
+        match crate::oauth_login::start_callback_server(crate::oauth_login::CALLBACK_PORT, oauth_state.clone()) {
+            Ok(v) => v,
+            Err(_) => crate::oauth_login::start_callback_server(
+                crate::oauth_login::FALLBACK_PORT,
+                oauth_state.clone(),
+            )?,
+        };
+    let inner = crate::oauth_login::authorize_url(
+        crate::api::AUTH_REFRESH_CLIENT_ID,
+        port,
+        &pkce,
+        &oauth_state,
+    );
+    let url = crate::oauth_login::desktop_auth_url(&inner);
     let cancel = Arc::new(AtomicBool::new(false));
-    *state.login.lock().unwrap() =
-        Some(LoginSession { home: home.clone(), cancel: cancel.clone() });
+    *state.login.lock().unwrap() = Some(LoginSession {
+        home: home.clone(),
+        cancel: cancel.clone(),
+        outcome,
+        verifier: pkce.verifier,
+        port,
+    });
 
+    let _ = app.emit(
+        "codex-login-output",
+        "Sign-in started. Complete it in the browser, then return here.".to_string(),
+    );
+    let _ = app.emit("codex-login-url", url);
     let app_out = app.clone();
-    // The CLI mirrors everything to both stdout and stderr (sometimes with
-    // differing whitespace), so remember a window of normalized recent lines
-    // and skip repeats. Each line is shown once.
-    let seen: Arc<Mutex<std::collections::VecDeque<String>>> =
-        Arc::new(Mutex::new(std::collections::VecDeque::new()));
-    let mut streams: Vec<Box<dyn Read + Send>> = Vec::new();
-    if let Some(s) = stdout {
-        streams.push(Box::new(s));
-    }
-    if let Some(s) = stderr {
-        streams.push(Box::new(s));
-    }
-    for stream in streams {
-        let app_c = app_out.clone();
-        let cancel_c = cancel.clone();
-        let seen_c = seen.clone();
-        thread::spawn(move || {
-            for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                let clean = strip_ansi(&line);
-                if clean.trim().is_empty() {
-                    continue;
-                }
-                if mark_seen(&seen_c, &clean) {
-                    continue;
-                }
-                let _ = app_c.emit("codex-login-output", clean.clone());
-                if let Some(url) = extract_url(&clean).filter(|u| login_url_is_actionable(u)) {
-                    let _ = app_c.emit("codex-login-url", url);
-                }
-                if cancel_c.load(Ordering::SeqCst) {
-                    break;
-                }
-            }
-        });
-    }
-
     let state_c = app.clone();
     thread::spawn(move || {
         let state_c: State<AppState> = state_c.state();
-        let exit_ok = loop {
+        loop {
             if cancel.load(Ordering::SeqCst) {
-                let _ = child.kill();
-                let _ = child.wait();
-                finish_login(&app_out, &state_c, &home, LoginEnd::Cancelled);
+                if let Some(sess) = state_c.login.lock().unwrap().take() {
+                    sess.outcome.shutdown.store(true, Ordering::SeqCst);
+                    let st = state_lock(&state_c);
+                    st.auth.remove_login_codex_home(Some(&sess.home));
+                }
+                append_log(&state_c, "Login cancelled.");
+                let _ = app_out.emit(
+                    "codex-login-done",
+                    serde_json::json!({"ok": false, "message": "Login cancelled."}),
+                );
                 return;
             }
-            match child.try_wait() {
-                Ok(Some(status)) => break status.success(),
-                Ok(None) => thread::sleep(std::time::Duration::from_millis(200)),
-                Err(_) => break false,
+            let arrival = state_c.login.lock().unwrap().as_ref().and_then(|s| {
+                s.outcome
+                    .code
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+            });
+            match arrival {
+                None => thread::sleep(std::time::Duration::from_millis(200)),
+                Some(Err(message)) => {
+                    if let Some(sess) = state_c.login.lock().unwrap().take() {
+                        let st = state_lock(&state_c);
+                        st.auth.remove_login_codex_home(Some(&sess.home));
+                    }
+                    append_log(&state_c, &message);
+                    let _ = app_out.emit(
+                        "codex-login-done",
+                        serde_json::json!({"ok": false, "message": message}),
+                    );
+                    return;
+                }
+                Some(Ok(code)) => {
+                    finish_native_login(&app_out, &state_c, code);
+                    return;
+                }
             }
-        };
-        state_c.login.lock().unwrap().take();
-        if exit_ok {
-            finish_login(&app_out, &state_c, &home, LoginEnd::Exited);
-        } else {
-            finish_login(&app_out, &state_c, &home, LoginEnd::Failed);
         }
     });
     append_log(&state, "Started Codex login.");
     Ok("Login started. Complete the flow in the dialog.".into())
 }
 
-enum LoginEnd {
-    Exited,
-    Failed,
-    Cancelled,
-}
-
-fn finish_login(app: &AppHandle, state: &State<AppState>, home: &Path, end: LoginEnd) {
+fn finish_native_login(app: &AppHandle, state: &State<AppState>, code: String) {
     let api = UsageApiClient::new();
-    let done = |ok: bool, message: String| {
-        let st = state_lock(state);
-        st.auth.remove_login_codex_home(Some(home));
-        drop(st);
+    let fail = |message: String| {
+        if let Some(sess) = state.login.lock().unwrap().take() {
+            let st = state_lock(state);
+            st.auth.remove_login_codex_home(Some(&sess.home));
+        }
         append_log(state, &message);
-        let _ = app.emit("codex-login-done", serde_json::json!({"ok": ok, "message": message}));
+        let _ = app.emit("codex-login-done", serde_json::json!({"ok": false, "message": message}));
     };
-    match end {
-        LoginEnd::Cancelled => {
-            done(false, "Login cancelled.".into());
+    let (home, verifier, port) = match state.login.lock().unwrap().as_ref() {
+        Some(s) => (s.home.clone(), s.verifier.clone(), s.port),
+        None => {
+            fail("Login session ended before sign-in completed.".into());
             return;
         }
-        LoginEnd::Failed => {
-            done(false, "Login process exited without success.".into());
-            return;
-        }
-        LoginEnd::Exited => {}
-    }
-    let isolated_path = {
-        let st = state_lock(state);
-        st.auth.active_auth_path_for_home(home)
     };
-    let snapshot = {
-        let st = state_lock(state);
-        st.auth.load_snapshot_from_path(&isolated_path)
-    };
-    let jwt = match snapshot {
-        Ok(s) => s.tokens.and_then(|t| t.access_token).filter(|t| !t.is_empty()),
+    let redirect = crate::oauth_login::redirect_uri(port);
+    let http = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c) => c,
         Err(e) => {
-            done(false, format!("Login produced an unreadable auth file: {e}"));
+            fail(format!("Login failed: {e}"));
             return;
         }
     };
-    let Some(jwt) = jwt else {
-        done(false, "Login produced no access token.".into());
-        return;
+    let tokens = match tauri::async_runtime::block_on(crate::oauth_login::exchange_code(
+        &http,
+        crate::oauth_login::OAUTH_ISSUER,
+        crate::api::AUTH_REFRESH_CLIENT_ID,
+        &code,
+        &redirect,
+        &verifier,
+    )) {
+        Ok(t) => t,
+        Err(e) => {
+            fail(e);
+            return;
+        }
     };
+    let jwt = tokens.access_token.clone();
+    let account_id = crate::oauth_login::account_id_from_id_token(&tokens.id_token);
+    let snapshot = AuthFileSnapshot {
+        auth_mode: Some("chatgpt".into()),
+        openai_api_key: None,
+        tokens: Some(AuthTokens {
+            id_token: Some(tokens.id_token),
+            access_token: Some(tokens.access_token),
+            refresh_token: Some(tokens.refresh_token),
+            account_id,
+        }),
+        last_refresh: Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()),
+        email: None,
+    };
+    {
+        let st = state_lock(state);
+        let path = st.auth.active_auth_path_for_home(&home);
+        let text = match serde_json::to_string_pretty(&snapshot) {
+            Ok(t) => t,
+            Err(e) => {
+                drop(st);
+                fail(format!("Login failed: {e}"));
+                return;
+            }
+        };
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Err(e) = fs::write(&path, text) {
+            drop(st);
+            fail(format!("Login failed: {e}"));
+            return;
+        }
+    }
     let response: UsageResponse = match tauri::async_runtime::block_on(api.fetch_usage(&jwt)) {
         Ok(r) => r,
         Err(e) => {
-            done(false, format!("Login succeeded but quota fetch failed: {e}"));
+            fail(format!("Login succeeded but quota fetch failed: {e}"));
             return;
         }
     };
-    let mut st = state_lock(state);
-    let email = match st.apply_usage_response(&response, jwt.clone(), now_secs(), false) {
-        Some(e) => e,
-        None => {
+    let message = {
+        let mut st = state_lock(state);
+        let email = match st.apply_usage_response(&response, jwt.clone(), now_secs(), false) {
+            Some(e) => e,
+            None => {
+                drop(st);
+                fail("Login produced no usable account.".into());
+                return;
+            }
+        };
+        if let Some(current) = st.current_email.clone() {
+            if current != email {
+                let _ = st.auth.backup_current_auth(&current);
+            }
+        }
+        let source = st.auth.active_auth_path_for_home(&home);
+        if let Err(e) = st.auth.activate_auth_from_path(&source) {
             drop(st);
-            done(false, "Login produced no usable account.".into());
+            fail(format!("Could not activate the new account: {e}"));
             return;
         }
+        st.set_current(email.clone(), jwt);
+        if let Some(account_id) = response.account_id.clone() {
+            let jwt = st.latest_jwt_for(Some(&email)).unwrap_or_default();
+            if let Ok(credits) =
+                tauri::async_runtime::block_on(api.fetch_reset_credits(&jwt, &account_id))
+            {
+                st.apply_reset_credits(&email, credits);
+            }
+        }
+        format!("Signed in as {email}.")
     };
-    if let Some(current) = st.current_email.clone() {
-        if current != email {
-            let _ = st.auth.backup_current_auth(&current);
-        }
+    if state.login.lock().unwrap().take().is_some() {
+        let st = state_lock(state);
+        st.auth.remove_login_codex_home(Some(&home));
     }
-    let source = st.auth.active_auth_path_for_home(home);
-    if let Err(e) = st.auth.activate_auth_from_path(&source) {
-        drop(st);
-        done(false, format!("Could not activate the new account: {e}"));
-        return;
-    }
-    st.set_current(email.clone(), jwt);
-    if let Some(account_id) = response.account_id.clone() {
-        let jwt = st.latest_jwt_for(Some(&email)).unwrap_or_default();
-        if let Ok(credits) = tauri::async_runtime::block_on(api.fetch_reset_credits(&jwt, &account_id)) {
-            st.apply_reset_credits(&email, credits);
-        }
-    }
-    drop(st);
-    done(true, format!("Signed in as {email}."));
+    append_log(state, &message);
+    let _ = app.emit("codex-login-done", serde_json::json!({"ok": true, "message": message}));
 }
 
 #[tauri::command]
@@ -1097,42 +955,6 @@ mod real_store_tests {
         };
         let text = serde_json::to_string(&snap).expect("snapshot must serialize");
         assert!(text.contains("accounts"));
-    }
-
-    #[test]
-    fn login_output_dedupe() {
-        let seen = Mutex::new(std::collections::VecDeque::new());
-        assert!(!mark_seen(&seen, "hello  world"));
-        assert!(mark_seen(&seen, "hello world"));
-        assert!(mark_seen(&seen, "  hello   world  "));
-        assert!(!mark_seen(&seen, "other line"));
-    }
-
-    #[test]
-    fn login_url_skips_loopback() {
-        assert!(!login_url_is_actionable("http://localhost:1455"));
-        assert!(!login_url_is_actionable("http://127.0.0.1:1455/auth/callback"));
-        assert!(login_url_is_actionable("https://auth.openai.com/oauth/authorize?a=1"));
-        assert!(!login_url_is_actionable("javascript:alert(1)"));
-    }
-
-    #[test]
-    fn login_url_extraction() {
-        assert_eq!(extract_url("no url here"), None);
-        assert_eq!(
-            extract_url("navigate to https://auth.openai.com/oauth/authorize?a=1 to continue.").as_deref(),
-            Some("https://auth.openai.com/oauth/authorize?a=1")
-        );
-        assert_eq!(
-            extract_url("http://localhost:1455/callback").as_deref(),
-            Some("http://localhost:1455/callback")
-        );
-    }
-
-    #[test]
-    fn sidecar_triple_matches_external_bin_naming() {
-        let triple = sidecar_triple().expect("test host must map to a sidecar triple");
-        assert!(triple.starts_with(std::env::consts::ARCH));
     }
 
     #[test]

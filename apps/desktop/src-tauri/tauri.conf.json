@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run fetch:sidecar && npm run build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -29,7 +29,6 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Monitor Codex API usage and quotas",
-    "externalBin": ["binaries/codex"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

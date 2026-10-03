@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "fetch:sidecar": "node ../../scripts/fetch-codex-sidecar.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
