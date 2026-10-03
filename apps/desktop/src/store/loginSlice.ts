@@ -1,4 +1,5 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/tauri";
 import { setBusy, setStatus } from "./uiSlice";
 import type { RootState } from "./store";
@@ -9,6 +10,7 @@ interface LoginState {
   done: string | null;
   starting: boolean;
   urlOpened: boolean;
+  url: string | null;
 }
 
 const initialState: LoginState = {
@@ -17,7 +19,32 @@ const initialState: LoginState = {
   done: null,
   starting: false,
   urlOpened: false,
+  url: null,
 };
+
+export const openLoginUrlOrDefault = createAsyncThunk<void, string, { state: RootState }>(
+  "login/openUrl",
+  async (url, { dispatch }) => {
+    try {
+      dispatch(setStatus(await api.openLoginUrl(url)));
+    } catch {
+      dispatch(setStatus("Opened login page in the default browser."));
+      void openUrl(url).catch(() => undefined);
+    }
+  },
+);
+
+export const copyLoginUrl = createAsyncThunk<void, string, { state: RootState }>(
+  "login/copyUrl",
+  async (url, { dispatch }) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      dispatch(setStatus("Login URL copied — paste it into a private window."));
+    } catch {
+      dispatch(setStatus("Could not copy the URL. Select it from the log above."));
+    }
+  },
+);
 
 export const startLogin = createAsyncThunk<void, void, { state: RootState }>(
   "login/start",
@@ -65,9 +92,18 @@ const loginSlice = createSlice({
       state.lines = [];
       state.done = null;
       state.urlOpened = false;
+      state.url = null;
+    },
+    setUrl(state, action: { payload: string }) {
+      state.url = action.payload;
     },
     appendLines(state, action: { payload: string[] }) {
-      state.lines = [...state.lines, ...action.payload].slice(-200);
+      for (const line of action.payload) {
+        if (line !== state.lines[state.lines.length - 1]) {
+          state.lines.push(line);
+        }
+      }
+      state.lines = state.lines.slice(-200);
     },
     markUrlOpened(state) {
       state.urlOpened = true;
@@ -78,6 +114,6 @@ const loginSlice = createSlice({
   },
 });
 
-export const { setOpen, setStarting, resetLines, appendLines, markUrlOpened, setDone } =
+export const { setOpen, setStarting, resetLines, appendLines, markUrlOpened, setDone, setUrl } =
   loginSlice.actions;
 export default loginSlice.reducer;

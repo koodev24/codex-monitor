@@ -64,12 +64,18 @@ fn current_refresh_timestamp() -> String {
 /// Abstraction over token refresh so tests can fake it.
 /// Mirrors AuthRefreshClient.refresh_tokens.
 pub trait TokenRefresher {
-    async fn refresh_tokens(&self, refresh_token: &str) -> Result<RefreshedTokens, ApiError>;
+    fn refresh_tokens(
+        &self,
+        refresh_token: &str,
+    ) -> impl std::future::Future<Output = Result<RefreshedTokens, ApiError>> + Send;
 }
 
 impl TokenRefresher for AuthRefreshClient {
-    async fn refresh_tokens(&self, refresh_token: &str) -> Result<RefreshedTokens, ApiError> {
-        self.refresh_tokens(refresh_token).await
+    fn refresh_tokens(
+        &self,
+        refresh_token: &str,
+    ) -> impl std::future::Future<Output = Result<RefreshedTokens, ApiError>> + Send {
+        self.refresh_tokens(refresh_token)
     }
 }
 
@@ -410,8 +416,12 @@ mod tests {
     }
 
     impl TokenRefresher for FakeRefresher {
-        async fn refresh_tokens(&self, _rt: &str) -> Result<RefreshedTokens, ApiError> {
-            Ok(self.tokens.clone())
+        fn refresh_tokens(
+            &self,
+            _rt: &str,
+        ) -> impl std::future::Future<Output = Result<RefreshedTokens, ApiError>> + Send {
+            let tokens = self.tokens.clone();
+            async move { Ok(tokens) }
         }
     }
 

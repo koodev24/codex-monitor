@@ -14,6 +14,7 @@ interface SnapshotState {
   sortAsc: boolean;
   authRetries: number;
   loadError: string | null;
+  fetchFailed: Record<string, string>;
 }
 
 const initialState: SnapshotState = {
@@ -23,7 +24,12 @@ const initialState: SnapshotState = {
   sortAsc: true,
   authRetries: 0,
   loadError: null,
+  fetchFailed: {},
 };
+
+function isAuthFetchFailure(message: string): boolean {
+  return /401|expired|unauthori[sz]ed|no saved|no access token/i.test(message);
+}
 
 const MISSING_TOKEN_RETRIES = 6;
 
@@ -115,6 +121,7 @@ export const manualFetch = createAsyncThunk<void, string | undefined, { state: R
     try {
       const r = email ? await api.fetchBackup(email) : await api.manualFetch();
       dispatch(setStatus(r.message));
+      dispatch(clearFetchFailed(email ?? getState().snapshot.snap?.current_email ?? ""));
       await dispatch(loadSnapshot());
       await dispatch(refreshLogs());
     } catch (e) {
@@ -122,6 +129,10 @@ export const manualFetch = createAsyncThunk<void, string | undefined, { state: R
       const prefix = email ? `NO_BACKUP ${email}: ` : null;
       const message = prefix && raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
       dispatch(setStatus(`Fetch failed: ${message}`));
+      const target = email ?? getState().snapshot.snap?.current_email;
+      if (target && isAuthFetchFailure(message)) {
+        dispatch(setFetchFailed({ email: target, reason: message }));
+      }
     } finally {
       dispatch(setBusy({ key, on: false }));
     }
@@ -156,10 +167,15 @@ export const fetchAllAccounts = createAsyncThunk<void, void, { state: RootState 
       results.forEach((r, i) => {
         if (r.status === "fulfilled") {
           fetched++;
+          dispatch(clearFetchFailed(emails[i]));
         } else {
           const raw = `${r.reason}`;
           const prefix = `NO_BACKUP ${emails[i]}: `;
-          failed.push(`${emails[i]} (${raw.startsWith(prefix) ? raw.slice(prefix.length) : raw})`);
+          const message = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+          failed.push(`${emails[i]} (${message})`);
+          if (isAuthFetchFailure(message)) {
+            dispatch(setFetchFailed({ email: emails[i], reason: message }));
+          }
         }
       });
       await dispatch(loadSnapshot());
@@ -186,6 +202,7 @@ export const runConfirmAction = createAsyncThunk<void, void, { state: RootState 
     try {
       if (confirm.kind === "remove") {
         dispatch(setStatus(await api.removeAccount(confirm.email)));
+        dispatch(clearFetchFailed(confirm.email));
       } else if (confirm.kind === "archive") {
         dispatch(setStatus(await api.setArchived(confirm.email, !confirm.archived)));
       } else {
@@ -332,8 +349,15 @@ const snapshotSlice = createSlice({
     setLoadError(state, action: { payload: string | null }) {
       state.loadError = action.payload;
     },
+    setFetchFailed(state, action: { payload: { email: string; reason: string } }) {
+      if (action.payload.email) state.fetchFailed[action.payload.email] = action.payload.reason;
+    },
+    clearFetchFailed(state, action: { payload: string }) {
+      if (action.payload) delete state.fetchFailed[action.payload];
+    },
   },
 });
 
-export const { setSnapshot, setSortView, setAuthRetries, setLoadError } = snapshotSlice.actions;
+export const { setSnapshot, setSortView, setAuthRetries, setLoadError, setFetchFailed, clearFetchFailed } =
+  snapshotSlice.actions;
 export default snapshotSlice.reducer;
