@@ -165,3 +165,10 @@ body {
 *::-webkit-scrollbar-thumb:hover {
   background: var(--muted-foreground);
 }
+
+/* Let a Table's own overflow wrapper defer to an ancestor ScrollArea viewport,
+   so narrow tables scroll with themed bars instead of native ones. Unlayered
+   on purpose: beats the utility without touching registry files. */
+[data-slot="scroll-area-viewport"] > [data-slot="table-container"] {
+  overflow: visible;
+}
