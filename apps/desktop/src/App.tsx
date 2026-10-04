@@ -39,7 +39,8 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { useGroupRef } from "react-resizable-panels";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -191,6 +192,7 @@ export default function App() {
   const loginStarting = useAppSelector((s) => s.login.starting);
   const confirmBusy = useAppSelector(selectBusy("confirm"));
   const { dark, toggle } = useTheme();
+  const panelsRef = useGroupRef();
 
   useEffect(() => {
     if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
@@ -313,8 +315,8 @@ export default function App() {
   return (
     <TooltipProvider>
       <div className="flex h-screen flex-col gap-2 bg-background p-2 text-foreground">
-        <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
-          <ResizablePanel defaultSize={62} minSize={25}>
+        <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1" groupRef={panelsRef}>
+          <ResizablePanel id="accounts" defaultSize={62} minSize={25}>
             <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
               <ScrollArea className="min-h-0 flex-1">
                 {!initialized ? (
@@ -463,13 +465,18 @@ export default function App() {
                     </TableBody>
                   </Table>
                 )}
+                <ScrollBar orientation="horizontal" />
               </ScrollArea>
             </div>
           </ResizablePanel>
 
-          <ResizableHandle withHandle />
+          <ResizableHandle
+            withHandle
+            disableDoubleClick
+            onDoubleClick={() => panelsRef.current?.setLayout({ accounts: 50, tools: 50 })}
+          />
 
-          <ResizablePanel defaultSize={38} minSize={18}>
+          <ResizablePanel id="tools" defaultSize={38} minSize={18}>
             <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-2">
               <p
                 className="shrink-0 truncate px-1 text-xs text-muted-foreground"
