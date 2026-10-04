@@ -139,6 +139,10 @@ body {
   html {
     @apply font-sans;
   }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
 }
 
 /* Thin native scrollbars that follow the active theme, so plain
