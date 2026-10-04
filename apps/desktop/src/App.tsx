@@ -316,7 +316,7 @@ export default function App() {
         <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
           <ResizablePanel defaultSize={62} minSize={25}>
             <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
-              <div className="min-h-0 flex-1 overflow-auto">
+              <ScrollArea className="min-h-0 flex-1">
                 {!initialized ? (
                   loadError ? (
                     <div className="flex h-48 flex-col items-center justify-center gap-3 px-6 text-center">
@@ -463,7 +463,7 @@ export default function App() {
                     </TableBody>
                   </Table>
                 )}
-              </div>
+              </ScrollArea>
             </div>
           </ResizablePanel>
 
