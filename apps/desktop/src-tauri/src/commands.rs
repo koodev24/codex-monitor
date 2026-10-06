@@ -848,15 +848,55 @@ pub fn open_login_url(url: String) -> Result<String, String> {
 pub fn restart_codex() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
+        // Ask Codex to quit gracefully. Failure here is non-fatal: the app
+        // may already be closed, in which case we just launch it below.
         let quit = Command::new("osascript")
             .args(["-e", "tell application \"Codex\" to quit"])
             .output();
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        let open = Command::new("open").args(["-a", "Codex"]).status();
-        match (quit, open) {
-            (_, Ok(s)) if s.success() => Ok("Restarted the Codex app.".into()),
-            _ => Err("Could not restart the Codex app.".into()),
+        if let Err(e) = &quit {
+            return Err(format!("Could not ask Codex to quit: {e}"));
         }
+        // Wait until the old process is actually gone before relaunching.
+        // `open -a` while the previous instance is still terminating fails
+        // with LSOpenURLsWithCompletionHandler error -600 (procNotFound):
+        // the app ends up closed and never reopened.
+        let mut gone = false;
+        for _ in 0..40 {
+            let alive = Command::new("pgrep")
+                .args(["-x", "Codex"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(true);
+            if !alive {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if !gone {
+            return Err(
+                "Codex is still closing (close it manually, then reopen it).".into(),
+            );
+        }
+        // Grace period so LaunchServices releases the old instance.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        for attempt in 0..2 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+            }
+            match Command::new("open").args(["-a", "Codex"]).output() {
+                Ok(o) if o.status.success() => return Ok("Restarted the Codex app.".into()),
+                Ok(o) if attempt == 1 => {
+                    let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    if detail.is_empty() {
+                        return Err("Could not reopen Codex.".into());
+                    }
+                    return Err(format!("Could not reopen Codex: {detail}"));
+                }
+                _ => {}
+            }
+        }
+        Err("Could not reopen Codex.".into())
     }
     #[cfg(not(target_os = "macos"))]
     {
