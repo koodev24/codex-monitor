@@ -120,8 +120,15 @@ function useTheme() {
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
   });
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark);
+    const root = document.documentElement;
+    root.classList.add("disable-transitions");
+    root.classList.toggle("dark", dark);
     localStorage.setItem("cm-theme", dark ? "dark" : "light");
+    const frame = window.requestAnimationFrame(() => {
+      void root.offsetHeight;
+      root.classList.remove("disable-transitions");
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [dark]);
   return { dark, toggle: () => setDark((d) => !d) };
 }
