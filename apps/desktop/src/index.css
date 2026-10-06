@@ -266,14 +266,30 @@ body {
   --ring: oklch(0.66 0.11 130);
 }
 
-/* UI themes. Pick one via [data-ui]; "minimal" is the stock look (no rules).
-   Surfaces hook in via [data-surface="panel"] so registry files stay clean. */
-:root[data-ui="soft"] {
-  --radius: 0.9rem;
+/* UI themes. Pick one via [data-ui]. "Minimal" strips chrome instead of
+   restyling it; surfaces hook in via [data-surface="panel"] so registry
+   files stay clean. */
+:root[data-ui="minimal"] {
+  --radius: 0.375rem;
 }
-:root[data-ui="soft"] [data-surface="panel"] {
+:root[data-ui="minimal"] [data-surface="panel"] {
   border-color: transparent;
-  box-shadow: 0 8px 24px -12px rgb(0 0 0 / 0.25);
+  box-shadow: none;
+}
+:root[data-ui="neo"] {
+  --radius: 1.25rem;
+}
+:root[data-ui="neo"] [data-surface="panel"] {
+  background: var(--muted);
+  border-color: transparent;
+  box-shadow:
+    8px 8px 16px rgb(0 0 0 / 0.22),
+    -8px -8px 16px rgb(255 255 255 / 0.07);
+}
+.dark[data-ui="neo"] [data-surface="panel"] {
+  box-shadow:
+    10px 10px 22px rgb(0 0 0 / 0.55),
+    -8px -8px 18px rgb(255 255 255 / 0.05);
 }
 :root[data-ui="glass"] [data-surface="panel"] {
   background: color-mix(in oklch, var(--card) 60%, transparent);
@@ -284,8 +300,8 @@ body {
   --radius: 0rem;
 }
 :root[data-ui="brutal"] [data-surface="panel"] {
-  border-width: 2px;
-  box-shadow: 4px 4px 0 0 var(--foreground);
+  border: 2px solid var(--foreground);
+  box-shadow: 5px 5px 0 0 var(--primary);
 }
 :root[data-ui="clay"] {
   --radius: 1.25rem;
@@ -296,8 +312,12 @@ body {
     0 10px 20px -12px rgb(0 0 0 / 0.35),
     inset 0 1px 0 rgb(255 255 255 / 0.15);
 }
-:root[data-ui="round"] {
-  --radius: 1.4rem;
+:root[data-ui="bento"] {
+  --radius: 1rem;
+}
+:root[data-ui="bento"] [data-surface="panel"] {
+  border-width: 1px;
+  box-shadow: 0 12px 32px -16px rgb(0 0 0 / 0.4);
 }
 :root[data-ui="compact"] {
   --radius: 0.375rem;

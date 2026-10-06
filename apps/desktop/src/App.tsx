@@ -14,8 +14,11 @@ import {
   Eye,
   EyeOff,
   Loader2,
+  Moon,
   Palette,
   RefreshCw,
+  Shapes,
+  Sun,
   Trash2,
   Upload,
   UserPlus,
@@ -120,11 +123,11 @@ type Appearance = {
 
 const UI_THEMES = [
   { id: "minimal", label: "Minimal" },
-  { id: "soft", label: "Soft" },
+  { id: "neo", label: "Neo" },
   { id: "glass", label: "Glass" },
   { id: "brutal", label: "Brutal" },
   { id: "clay", label: "Clay" },
-  { id: "round", label: "Round" },
+  { id: "bento", label: "Bento" },
   { id: "compact", label: "Compact" },
   { id: "retro", label: "Retro" },
 ] as const;
@@ -241,7 +244,6 @@ export default function App() {
   const loginStarting = useAppSelector((s) => s.login.starting);
   const confirmBusy = useAppSelector(selectBusy("confirm"));
   const { appearance, setAppearance } = useAppearance();
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const panelsRef = useGroupRef();
   const [toolsShort, setToolsShort] = useState(false);
 
@@ -619,7 +621,43 @@ export default function App() {
                     <ArrowDownToLine />
                   </IconBtn>
                 )}
-                <IconBtn title="Appearance" onClick={() => setAppearanceOpen(true)}>
+                <IconBtn
+                  title={`Mode: ${appearance.mode} (click to switch)`}
+                  onClick={() =>
+                    setAppearance({
+                      ...appearance,
+                      mode: appearance.mode === "dark" ? "light" : "dark",
+                    })
+                  }
+                >
+                  {appearance.mode === "dark" ? <Sun /> : <Moon />}
+                </IconBtn>
+                <IconBtn
+                  title={`UI theme: ${UI_THEMES.find((t) => t.id === appearance.ui)?.label ?? appearance.ui} (click for next)`}
+                  onClick={() =>
+                    setAppearance({
+                      ...appearance,
+                      ui: UI_THEMES[
+                        (UI_THEMES.findIndex((t) => t.id === appearance.ui) + 1) % UI_THEMES.length
+                      ].id,
+                    })
+                  }
+                >
+                  <Shapes />
+                </IconBtn>
+                <IconBtn
+                  title={`Color: ${ACCENTS.find((a) => a.id === appearance.accent)?.label ?? appearance.accent} (click for next)`}
+                  onClick={() =>
+                    setAppearance({
+                      ...appearance,
+                      accent:
+                        ACCENTS[
+                          (ACCENTS.findIndex((a) => a.id === appearance.accent) + 1) %
+                            ACCENTS.length
+                        ].id,
+                    })
+                  }
+                >
                   <Palette />
                 </IconBtn>
                 </div>
@@ -634,78 +672,6 @@ export default function App() {
             </div>
           </ResizablePanel>
         </ResizablePanelGroup>
-
-        <Dialog open={appearanceOpen} onOpenChange={setAppearanceOpen}>
-          <DialogContent className="max-w-sm">
-            <DialogHeader>
-              <DialogTitle>Appearance</DialogTitle>
-              <DialogDescription>
-                Pick a mode, UI theme, and color. Saved automatically.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="flex flex-col gap-3">
-              <div className="flex items-center gap-2">
-                <Label htmlFor="appearance-mode" className="w-16 shrink-0 text-xs text-muted-foreground">
-                  Mode
-                </Label>
-                <Select
-                  value={appearance.mode}
-                  onValueChange={(v) =>
-                    setAppearance({ ...appearance, mode: v as Appearance["mode"] })
-                  }
-                >
-                  <SelectTrigger id="appearance-mode" className="h-8 flex-1">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="light">Light</SelectItem>
-                    <SelectItem value="dark">Dark</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center gap-2">
-                <Label htmlFor="appearance-ui" className="w-16 shrink-0 text-xs text-muted-foreground">
-                  UI theme
-                </Label>
-                <Select
-                  value={appearance.ui}
-                  onValueChange={(v) => setAppearance({ ...appearance, ui: v ?? "minimal" })}
-                >
-                  <SelectTrigger id="appearance-ui" className="h-8 flex-1">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {UI_THEMES.map((t) => (
-                      <SelectItem key={t.id} value={t.id}>
-                        {t.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center gap-2">
-                <Label htmlFor="appearance-accent" className="w-16 shrink-0 text-xs text-muted-foreground">
-                  Color
-                </Label>
-                <Select
-                  value={appearance.accent}
-                  onValueChange={(v) => setAppearance({ ...appearance, accent: v ?? "slate" })}
-                >
-                  <SelectTrigger id="appearance-accent" className="h-8 flex-1">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ACCENTS.map((a) => (
-                      <SelectItem key={a.id} value={a.id}>
-                        {a.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
 
         <Dialog open={confirm !== null} onOpenChange={(o) => !o && dispatch(setConfirm(null))}>
           <DialogContent>
