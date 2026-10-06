@@ -15,9 +15,7 @@ import {
   EyeOff,
   Loader2,
   Moon,
-  Palette,
   RefreshCw,
-  Shapes,
   Sun,
   Trash2,
   Upload,
@@ -115,71 +113,17 @@ import {
   setSwitchInfo,
 } from "./store/uiSlice";
 
-type Appearance = {
-  mode: "light" | "dark";
-  ui: string;
-  accent: string;
-};
-
-const UI_THEMES = [
-  { id: "minimal", label: "Minimal" },
-  { id: "neo", label: "Neo" },
-  { id: "glass", label: "Glass" },
-  { id: "brutal", label: "Brutal" },
-  { id: "clay", label: "Clay" },
-  { id: "bento", label: "Bento" },
-  { id: "compact", label: "Compact" },
-  { id: "retro", label: "Retro" },
-] as const;
-
-const ACCENTS = [
-  { id: "slate", label: "Slate" },
-  { id: "ocean", label: "Ocean" },
-  { id: "emerald", label: "Emerald" },
-  { id: "violet", label: "Violet" },
-  { id: "amber", label: "Amber" },
-  { id: "rose", label: "Rose" },
-  { id: "cyan", label: "Cyan" },
-  { id: "orange", label: "Orange" },
-  { id: "crimson", label: "Crimson" },
-  { id: "lime", label: "Lime" },
-] as const;
-
-function useAppearance() {
-  const [appearance, setAppearance] = useState<Appearance>(() => {
-    try {
-      const raw = localStorage.getItem("cm-appearance");
-      if (raw) {
-        const parsed = JSON.parse(raw) as Partial<Appearance>;
-        return {
-          mode: parsed.mode === "light" ? "light" : "dark",
-          ui: UI_THEMES.some((t) => t.id === parsed.ui) ? (parsed.ui as string) : "minimal",
-          accent: ACCENTS.some((a) => a.id === parsed.accent)
-            ? (parsed.accent as string)
-            : "slate",
-        };
-      }
-    } catch {
-      // Corrupt JSON falls through to defaults below.
-    }
-    const legacy = localStorage.getItem("cm-theme");
-    return {
-      mode:
-        legacy === "light" ||
-        (legacy !== "dark" && !window.matchMedia("(prefers-color-scheme: dark)").matches)
-          ? "light"
-          : "dark",
-      ui: "minimal",
-      accent: "slate",
-    };
+function useTheme() {
+  const [dark, setDark] = useState(() => {
+    const saved = localStorage.getItem("cm-theme");
+    if (saved) return saved === "dark";
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
   });
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", appearance.mode === "dark");
-    document.documentElement.dataset.ui = appearance.ui;
-    document.documentElement.dataset.accent = appearance.accent;
-    localStorage.setItem("cm-appearance", JSON.stringify(appearance));
-  }, [appearance]);
-  return { appearance, setAppearance };
+    document.documentElement.classList.toggle("dark", dark);
+    localStorage.setItem("cm-theme", dark ? "dark" : "light");
+  }, [dark]);
+  return { dark, toggle: () => setDark((d) => !d) };
 }
 
 function Spin({ className }: { className?: string }) {
@@ -243,7 +187,7 @@ export default function App() {
   const loginDone = useAppSelector((s) => s.login.done);
   const loginStarting = useAppSelector((s) => s.login.starting);
   const confirmBusy = useAppSelector(selectBusy("confirm"));
-  const { appearance, setAppearance } = useAppearance();
+  const { dark, toggle } = useTheme();
   const panelsRef = useGroupRef();
   const [toolsShort, setToolsShort] = useState(false);
 
@@ -373,7 +317,7 @@ export default function App() {
       <div className="flex h-screen flex-col gap-2 bg-background p-2 text-foreground">
         <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1" groupRef={panelsRef}>
           <ResizablePanel id="accounts" defaultSize={62} minSize={200}>
-            <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card" data-surface="panel">
+            <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
               <ScrollArea className="min-h-0 flex-1">
                 {!initialized ? (
                   loadError ? (
@@ -538,7 +482,7 @@ export default function App() {
             minSize={88}
             onResize={(size) => setToolsShort(size.asPercentage < 20)}
           >
-            <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-2" data-surface="panel">
+            <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-2">
               <div className="flex min-h-8 shrink-0 items-center gap-2">
                 <p
                   className="min-w-0 flex-1 truncate px-1 text-xs text-muted-foreground"
@@ -621,44 +565,8 @@ export default function App() {
                     <ArrowDownToLine />
                   </IconBtn>
                 )}
-                <IconBtn
-                  title={`Mode: ${appearance.mode} (click to switch)`}
-                  onClick={() =>
-                    setAppearance({
-                      ...appearance,
-                      mode: appearance.mode === "dark" ? "light" : "dark",
-                    })
-                  }
-                >
-                  {appearance.mode === "dark" ? <Sun /> : <Moon />}
-                </IconBtn>
-                <IconBtn
-                  title={`UI theme: ${UI_THEMES.find((t) => t.id === appearance.ui)?.label ?? appearance.ui} (click for next)`}
-                  onClick={() =>
-                    setAppearance({
-                      ...appearance,
-                      ui: UI_THEMES[
-                        (UI_THEMES.findIndex((t) => t.id === appearance.ui) + 1) % UI_THEMES.length
-                      ].id,
-                    })
-                  }
-                >
-                  <Shapes />
-                </IconBtn>
-                <IconBtn
-                  title={`Color: ${ACCENTS.find((a) => a.id === appearance.accent)?.label ?? appearance.accent} (click for next)`}
-                  onClick={() =>
-                    setAppearance({
-                      ...appearance,
-                      accent:
-                        ACCENTS[
-                          (ACCENTS.findIndex((a) => a.id === appearance.accent) + 1) %
-                            ACCENTS.length
-                        ].id,
-                    })
-                  }
-                >
-                  <Palette />
+                <IconBtn title="Toggle theme" onClick={toggle}>
+                  {dark ? <Sun /> : <Moon />}
                 </IconBtn>
                 </div>
               </div>
