@@ -9,7 +9,7 @@ interface LogsState {
   loading: boolean;
 }
 
-const initialState: LogsState = { open: false, entries: [], loading: false };
+const initialState: LogsState = { open: true, entries: [], loading: false };
 
 export const refreshLogs = createAsyncThunk<void, void, { state: RootState }>(
   "logs/refresh",

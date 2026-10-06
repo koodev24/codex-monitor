@@ -14,10 +14,8 @@ import {
   Eye,
   EyeOff,
   Loader2,
-  LogOut,
   Moon,
   RefreshCw,
-  ScrollText,
   Sun,
   Trash2,
   Upload,
@@ -88,14 +86,13 @@ import {
   setUrl,
   startLogin,
 } from "./store/loginSlice";
-import { clearLogs, refreshLogs, toggleLogs } from "./store/logsSlice";
+import { clearLogs, refreshLogs } from "./store/logsSlice";
 import {
   cycleSort,
   doExport,
   doImport,
   fetchAllAccounts,
   loadSnapshot,
-  logout,
   manualFetch,
   openResets,
   pollOnce,
@@ -123,8 +120,15 @@ function useTheme() {
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
   });
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark);
+    const root = document.documentElement;
+    root.classList.add("disable-transitions");
+    root.classList.toggle("dark", dark);
     localStorage.setItem("cm-theme", dark ? "dark" : "light");
+    const frame = window.requestAnimationFrame(() => {
+      void root.offsetHeight;
+      root.classList.remove("disable-transitions");
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [dark]);
   return { dark, toggle: () => setDark((d) => !d) };
 }
@@ -182,7 +186,6 @@ export default function App() {
   const switchInfo = useAppSelector((s) => s.ui.switchInfo);
   const updateReady = useAppSelector((s) => s.ui.updateReady);
   const updateProgress = useAppSelector((s) => s.ui.updateProgress);
-  const logsOpen = useAppSelector((s) => s.logs.open);
   const logs = useAppSelector((s) => s.logs.entries);
   const loginOpen = useAppSelector((s) => s.login.open);
   const loginLines = useAppSelector((s) => s.login.lines);
@@ -193,6 +196,7 @@ export default function App() {
   const confirmBusy = useAppSelector(selectBusy("confirm"));
   const { dark, toggle } = useTheme();
   const panelsRef = useGroupRef();
+  const [toolsShort, setToolsShort] = useState(false);
 
   useEffect(() => {
     if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
@@ -204,7 +208,10 @@ export default function App() {
       dispatch(setStatus("Not running inside Tauri."));
       return;
     }
-    void dispatch(loadSnapshot()).then(() => void dispatch(pollOnce()));
+    void dispatch(loadSnapshot()).then(() => {
+      void dispatch(pollOnce());
+      void dispatch(refreshLogs());
+    });
     const id = window.setInterval(() => {
       void dispatch(pollOnce());
       void dispatch(refreshLogs());
@@ -316,7 +323,7 @@ export default function App() {
     <TooltipProvider>
       <div className="flex h-screen flex-col gap-2 bg-background p-2 text-foreground">
         <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1" groupRef={panelsRef}>
-          <ResizablePanel id="accounts" defaultSize={62} minSize={25}>
+          <ResizablePanel id="accounts" defaultSize={62} minSize={200}>
             <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
               <ScrollArea className="min-h-0 flex-1">
                 {!initialized ? (
@@ -476,36 +483,33 @@ export default function App() {
             onDoubleClick={() => panelsRef.current?.setLayout({ accounts: 50, tools: 50 })}
           />
 
-          <ResizablePanel id="tools" defaultSize={38} minSize={18}>
+          <ResizablePanel
+            id="tools"
+            defaultSize={38}
+            minSize={88}
+            onResize={(size) => setToolsShort(size.asPercentage < 20)}
+          >
             <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-2">
-              <p
-                className="shrink-0 truncate px-1 text-xs text-muted-foreground"
-                title={status}
-              >
-                {anyBusy ? "Working… " : ""}
-                {updateProgress !== null ? `Downloading update ${updateProgress}%… ` : ""}
-                {status}
-              </p>
-              <div className="flex shrink-0 flex-wrap items-center gap-1">
+              <div className="flex min-h-8 shrink-0 items-center gap-2">
+                <p
+                  className="min-w-0 flex-1 truncate px-1 text-xs text-muted-foreground"
+                  title={status}
+                >
+                  {anyBusy ? "Working… " : ""}
+                  {updateProgress !== null ? `Downloading update ${updateProgress}%… ` : ""}
+                  {status}
+                </p>
+                <div className="flex shrink-0 flex-nowrap items-center gap-1 overflow-x-auto">
                 <IconBtn title="Copy status" onClick={() => void navigator.clipboard.writeText(status)}>
                   <Copy />
                 </IconBtn>
                 <IconBtn
-                  title={logsOpen ? "Hide logs" : "Show logs"}
-                  busyKey="logs:toggle"
-                  onClick={() => void dispatch(toggleLogs())}
+                  title="Clear logs"
+                  busyKey="logs:clear"
+                  onClick={() => void dispatch(clearLogs())}
                 >
-                  <ScrollText />
+                  <Eraser />
                 </IconBtn>
-                {logsOpen && (
-                  <IconBtn
-                    title="Clear logs"
-                    busyKey="logs:clear"
-                    onClick={() => void dispatch(clearLogs())}
-                  >
-                    <Eraser />
-                  </IconBtn>
-                )}
                 <IconBtn title="Export data" busyKey="data:export" onClick={() => void pickExportFile()}>
                   <Download />
                 </IconBtn>
@@ -515,7 +519,7 @@ export default function App() {
                 <IconBtn title="Add account via Codex login" onClick={startLoginUi}>
                   <UserPlus />
                 </IconBtn>
-                <span className="flex items-center gap-1.5 pl-1">
+                <span className="flex shrink-0 items-center gap-1.5">
                   <Label htmlFor="auto-fetch" className="text-xs text-muted-foreground">
                     Auto
                   </Label>
@@ -553,12 +557,6 @@ export default function App() {
                   {snap?.show_archived ? <EyeOff /> : <Eye />}
                 </IconBtn>
                 <IconBtn
-                  title="Sign out"
-                  onClick={() => void dispatch(logout())}
-                >
-                  <LogOut />
-                </IconBtn>
-                <IconBtn
                   title="Check for updates"
                   busyKey="update:check"
                   onClick={() => void dispatch(checkUpdates(true))}
@@ -577,8 +575,9 @@ export default function App() {
                 <IconBtn title="Toggle theme" onClick={toggle}>
                   {dark ? <Sun /> : <Moon />}
                 </IconBtn>
+                </div>
               </div>
-              {logsOpen && (
+              {!toolsShort && (
                 <ScrollArea className="min-h-0 flex-1 rounded-md border bg-muted/30">
                   <pre className="whitespace-pre-wrap p-2 text-xs text-muted-foreground">
                     {logs.length === 0 ? "(no log entries yet)" : logs.join("\n")}
