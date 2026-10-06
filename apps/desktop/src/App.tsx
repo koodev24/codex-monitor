@@ -14,10 +14,8 @@ import {
   Eye,
   EyeOff,
   Loader2,
-  LogOut,
-  Moon,
+  Palette,
   RefreshCw,
-  Sun,
   Trash2,
   Upload,
   UserPlus,
@@ -94,7 +92,6 @@ import {
   doImport,
   fetchAllAccounts,
   loadSnapshot,
-  logout,
   manualFetch,
   openResets,
   pollOnce,
@@ -115,17 +112,71 @@ import {
   setSwitchInfo,
 } from "./store/uiSlice";
 
-function useTheme() {
-  const [dark, setDark] = useState(() => {
-    const saved = localStorage.getItem("cm-theme");
-    if (saved) return saved === "dark";
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+type Appearance = {
+  mode: "light" | "dark";
+  ui: string;
+  accent: string;
+};
+
+const UI_THEMES = [
+  { id: "minimal", label: "Minimal" },
+  { id: "soft", label: "Soft" },
+  { id: "glass", label: "Glass" },
+  { id: "brutal", label: "Brutal" },
+  { id: "clay", label: "Clay" },
+  { id: "round", label: "Round" },
+  { id: "compact", label: "Compact" },
+  { id: "retro", label: "Retro" },
+] as const;
+
+const ACCENTS = [
+  { id: "slate", label: "Slate" },
+  { id: "ocean", label: "Ocean" },
+  { id: "emerald", label: "Emerald" },
+  { id: "violet", label: "Violet" },
+  { id: "amber", label: "Amber" },
+  { id: "rose", label: "Rose" },
+  { id: "cyan", label: "Cyan" },
+  { id: "orange", label: "Orange" },
+  { id: "crimson", label: "Crimson" },
+  { id: "lime", label: "Lime" },
+] as const;
+
+function useAppearance() {
+  const [appearance, setAppearance] = useState<Appearance>(() => {
+    try {
+      const raw = localStorage.getItem("cm-appearance");
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<Appearance>;
+        return {
+          mode: parsed.mode === "light" ? "light" : "dark",
+          ui: UI_THEMES.some((t) => t.id === parsed.ui) ? (parsed.ui as string) : "minimal",
+          accent: ACCENTS.some((a) => a.id === parsed.accent)
+            ? (parsed.accent as string)
+            : "slate",
+        };
+      }
+    } catch {
+      // Corrupt JSON falls through to defaults below.
+    }
+    const legacy = localStorage.getItem("cm-theme");
+    return {
+      mode:
+        legacy === "light" ||
+        (legacy !== "dark" && !window.matchMedia("(prefers-color-scheme: dark)").matches)
+          ? "light"
+          : "dark",
+      ui: "minimal",
+      accent: "slate",
+    };
   });
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark);
-    localStorage.setItem("cm-theme", dark ? "dark" : "light");
-  }, [dark]);
-  return { dark, toggle: () => setDark((d) => !d) };
+    document.documentElement.classList.toggle("dark", appearance.mode === "dark");
+    document.documentElement.dataset.ui = appearance.ui;
+    document.documentElement.dataset.accent = appearance.accent;
+    localStorage.setItem("cm-appearance", JSON.stringify(appearance));
+  }, [appearance]);
+  return { appearance, setAppearance };
 }
 
 function Spin({ className }: { className?: string }) {
@@ -189,7 +240,8 @@ export default function App() {
   const loginDone = useAppSelector((s) => s.login.done);
   const loginStarting = useAppSelector((s) => s.login.starting);
   const confirmBusy = useAppSelector(selectBusy("confirm"));
-  const { dark, toggle } = useTheme();
+  const { appearance, setAppearance } = useAppearance();
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const panelsRef = useGroupRef();
   const [toolsShort, setToolsShort] = useState(false);
 
@@ -319,7 +371,7 @@ export default function App() {
       <div className="flex h-screen flex-col gap-2 bg-background p-2 text-foreground">
         <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1" groupRef={panelsRef}>
           <ResizablePanel id="accounts" defaultSize={62} minSize={200}>
-            <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
+            <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card" data-surface="panel">
               <ScrollArea className="min-h-0 flex-1">
                 {!initialized ? (
                   loadError ? (
@@ -482,18 +534,19 @@ export default function App() {
             id="tools"
             defaultSize={38}
             minSize={88}
-            onResize={(size) => setToolsShort(size.asPercentage < 30)}
+            onResize={(size) => setToolsShort(size.asPercentage < 20)}
           >
-            <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-2">
-              <p
-                className="shrink-0 truncate px-1 text-xs text-muted-foreground"
-                title={status}
-              >
-                {anyBusy ? "Working… " : ""}
-                {updateProgress !== null ? `Downloading update ${updateProgress}%… ` : ""}
-                {status}
-              </p>
-              <div className="flex min-h-8 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto">
+            <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-2" data-surface="panel">
+              <div className="flex min-h-8 shrink-0 items-center gap-2">
+                <p
+                  className="min-w-0 flex-1 truncate px-1 text-xs text-muted-foreground"
+                  title={status}
+                >
+                  {anyBusy ? "Working… " : ""}
+                  {updateProgress !== null ? `Downloading update ${updateProgress}%… ` : ""}
+                  {status}
+                </p>
+                <div className="flex shrink-0 flex-nowrap items-center gap-1 overflow-x-auto">
                 <IconBtn title="Copy status" onClick={() => void navigator.clipboard.writeText(status)}>
                   <Copy />
                 </IconBtn>
@@ -551,12 +604,6 @@ export default function App() {
                   {snap?.show_archived ? <EyeOff /> : <Eye />}
                 </IconBtn>
                 <IconBtn
-                  title="Sign out"
-                  onClick={() => void dispatch(logout())}
-                >
-                  <LogOut />
-                </IconBtn>
-                <IconBtn
                   title="Check for updates"
                   busyKey="update:check"
                   onClick={() => void dispatch(checkUpdates(true))}
@@ -572,9 +619,10 @@ export default function App() {
                     <ArrowDownToLine />
                   </IconBtn>
                 )}
-                <IconBtn title="Toggle theme" onClick={toggle}>
-                  {dark ? <Sun /> : <Moon />}
+                <IconBtn title="Appearance" onClick={() => setAppearanceOpen(true)}>
+                  <Palette />
                 </IconBtn>
+                </div>
               </div>
               {!toolsShort && (
                 <ScrollArea className="min-h-0 flex-1 rounded-md border bg-muted/30">
@@ -586,6 +634,78 @@ export default function App() {
             </div>
           </ResizablePanel>
         </ResizablePanelGroup>
+
+        <Dialog open={appearanceOpen} onOpenChange={setAppearanceOpen}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Appearance</DialogTitle>
+              <DialogDescription>
+                Pick a mode, UI theme, and color. Saved automatically.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="appearance-mode" className="w-16 shrink-0 text-xs text-muted-foreground">
+                  Mode
+                </Label>
+                <Select
+                  value={appearance.mode}
+                  onValueChange={(v) =>
+                    setAppearance({ ...appearance, mode: v as Appearance["mode"] })
+                  }
+                >
+                  <SelectTrigger id="appearance-mode" className="h-8 flex-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="light">Light</SelectItem>
+                    <SelectItem value="dark">Dark</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="appearance-ui" className="w-16 shrink-0 text-xs text-muted-foreground">
+                  UI theme
+                </Label>
+                <Select
+                  value={appearance.ui}
+                  onValueChange={(v) => setAppearance({ ...appearance, ui: v ?? "minimal" })}
+                >
+                  <SelectTrigger id="appearance-ui" className="h-8 flex-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {UI_THEMES.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="appearance-accent" className="w-16 shrink-0 text-xs text-muted-foreground">
+                  Color
+                </Label>
+                <Select
+                  value={appearance.accent}
+                  onValueChange={(v) => setAppearance({ ...appearance, accent: v ?? "slate" })}
+                >
+                  <SelectTrigger id="appearance-accent" className="h-8 flex-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ACCENTS.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={confirm !== null} onOpenChange={(o) => !o && dispatch(setConfirm(null))}>
           <DialogContent>
