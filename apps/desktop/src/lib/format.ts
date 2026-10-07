@@ -117,6 +117,22 @@ export function weeklyOf(a: AccountUsage): RateLimitWindow | undefined {
   return a.weekly_window ?? a.secondary_window ?? a.primary_window;
 }
 
+export function shortOf(a: AccountUsage): RateLimitWindow | undefined {
+  return a.short_window;
+}
+
+export function hasShortWindow(a: AccountUsage): boolean {
+  const w = a.short_window;
+  if (!w) return false;
+  const hasUsed =
+    typeof w.used_percent === "number" && Number.isFinite(w.used_percent);
+  return hasUsed || typeof w.reset_at === "number";
+}
+
+export function shortResetTsOf(a: AccountUsage): number | undefined {
+  return a.short_window?.reset_at;
+}
+
 export function resetTsOf(a: AccountUsage): number {
   return weeklyOf(a)?.reset_at ?? a.reset_ts ?? 0;
 }
