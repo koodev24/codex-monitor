@@ -65,6 +65,8 @@ import {
   formatGrantedAt,
   formatQuotaLeft,
   formatResetDisplay,
+  hasShortWindow,
+  shortResetTsOf,
   formatTimeRemaining,
   resetTsOf,
   soonestExpiringCredit,
@@ -395,6 +397,11 @@ export default function App() {
                       {rows.map(([email, a]) => {
                         const isCurrent = email === snap?.current_email;
                         const weekly = weeklyOf(a);
+                        const hasShort = hasShortWindow(a);
+                        const weeklyQuota = formatQuotaLeft(usedOf(a));
+                        const weeklyReset = formatResetDisplay(resetTsOf(a), now);
+                        const shortQuota = formatQuotaLeft(a.short_window?.used_percent);
+                        const shortReset = formatResetDisplay(shortResetTsOf(a), now);
                         return (
                           <TableRow
                             key={email}
@@ -410,15 +417,47 @@ export default function App() {
                               </span>
                             </TableCell>
                             <TableCell
-                              title={weekly ? `Used ${weekly.used_percent ?? "?"}%` : "Fetch quota first"}
+                              title={
+                                weekly
+                                  ? `Used ${weekly.used_percent ?? "?"}%`
+                                  : "Fetch quota first"
+                              }
                             >
-                              {formatQuotaLeft(usedOf(a))}
+                              {hasShort ? (
+                                <>
+                                  <span className="block">
+                                    {shortQuota}{" "}
+                                    <span className="text-xs text-muted-foreground">(5h)</span>
+                                  </span>
+                                  <span className="block">
+                                    {weeklyQuota}{" "}
+                                    <span className="text-xs text-muted-foreground">(weekly)</span>
+                                  </span>
+                                </>
+                              ) : (
+                                weeklyQuota
+                              )}
                             </TableCell>
                             <TableCell
-                              className="max-w-56 truncate"
-                              title={formatResetDisplay(resetTsOf(a), now)}
+                              className="max-w-56"
+                              title={
+                                hasShort ? `${shortReset} (5h) • ${weeklyReset} (weekly)` : weeklyReset
+                              }
                             >
-                              {formatResetDisplay(resetTsOf(a), now)}
+                              {hasShort ? (
+                                <>
+                                  <span className="block truncate">
+                                    {shortReset}{" "}
+                                    <span className="text-xs text-muted-foreground">(5h)</span>
+                                  </span>
+                                  <span className="block truncate">
+                                    {weeklyReset}{" "}
+                                    <span className="text-xs text-muted-foreground">(weekly)</span>
+                                  </span>
+                                </>
+                              ) : (
+                                weeklyReset
+                              )}
                             </TableCell>
                             <TableCell>
                               <span className="flex justify-end gap-0.5">
