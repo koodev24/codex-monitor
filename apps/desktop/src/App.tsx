@@ -302,7 +302,10 @@ export default function App() {
   const arrow = (key: SortKey) => (sortKey === key ? (sortAsc ? " ▲" : " ▼") : " ↕");
 
   async function pickExportFile() {
-    const path = await save({ filters: [{ name: "JSON", extensions: ["json"] }] });
+    const path = await save({
+      defaultPath: "codex-monitor-backup.json",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
     if (path) void dispatch(doExport(path));
   }
 
