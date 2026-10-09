@@ -110,9 +110,26 @@ impl AuthFileWatcher {
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
                 if pending {
-                    thread::sleep(settle);
-                    while rx_event.try_recv().is_ok() {}
-                    if rx_ctrl.try_recv().is_ok() {
+                    // Trailing-edge debounce: keep waiting while events keep
+                    // arriving, so a burst always coalesces into one callback
+                    // no matter how the OS spreads out delivery. Capped so
+                    // sustained churn can delay but never starve the callback.
+                    let mut quiet_windows = 0;
+                    let stopped = loop {
+                        thread::sleep(settle);
+                        let mut more = false;
+                        while rx_event.try_recv().is_ok() {
+                            more = true;
+                        }
+                        if rx_ctrl.try_recv().is_ok() {
+                            break true;
+                        }
+                        quiet_windows += 1;
+                        if !more || quiet_windows >= 8 {
+                            break false;
+                        }
+                    };
+                    if stopped {
                         break;
                     }
                     pending = false;
