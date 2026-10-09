@@ -40,18 +40,26 @@ pub fn run() {
                             area.width, area.height, scale
                         );
                         if scale > 0.0 {
-                            let width = (area.width as f64 / scale * 0.8).round().max(540.0);
-                            let height = (area.height as f64 / scale * 0.8).round().max(320.0);
+                            let area = monitor.work_area();
+                            let width = (area.size.width as f64 / scale * 0.8).round().max(540.0);
+                            let height =
+                                (area.size.height as f64 / scale * 0.8).round().max(320.0);
                             if let Err(e) = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
                                 width,
                                 height,
                             })) {
                                 eprintln!("initial window size failed: {e}");
                             }
-                            if let Err(e) = win.center() {
+                            let x = area.position.x
+                                + ((area.size.width as f64 - width * scale) / 2.0).round() as i32;
+                            let y = area.position.y
+                                + ((area.size.height as f64 - height * scale) / 2.0).round() as i32;
+                            if let Err(e) = win.set_position(tauri::Position::Physical(
+                                tauri::PhysicalPosition { x, y },
+                            )) {
                                 eprintln!("initial window center failed: {e}");
                             } else {
-                                eprintln!("startup window: sized {width}x{height} and centered");
+                                eprintln!("startup window: sized {width}x{height} at {x},{y}");
                             }
                         }
                     }
