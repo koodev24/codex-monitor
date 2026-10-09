@@ -340,7 +340,12 @@ export default function App() {
   return (
     <TooltipProvider>
       <div className="flex h-screen flex-col gap-2 bg-background p-2 text-foreground">
-        <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1" groupRef={panelsRef}>
+        <ResizablePanelGroup
+          orientation="vertical"
+          className="min-h-0 flex-1"
+          groupRef={panelsRef}
+          defaultLayout={{ accounts: 62, tools: 38 }}
+        >
           <ResizablePanel id="accounts" defaultSize={62} minSize={200}>
             <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
               <ScrollArea className="min-h-0 flex-1">
@@ -536,7 +541,7 @@ export default function App() {
           <ResizableHandle
             withHandle
             disableDoubleClick
-            onDoubleClick={() => panelsRef.current?.setLayout({ accounts: 50, tools: 50 })}
+            onDoubleClick={() => panelsRef.current?.setLayout({ accounts: 62, tools: 38 })}
           />
 
           <ResizablePanel
