@@ -565,7 +565,7 @@ export default function App() {
                     {status}
                   </p>
                 </div>
-                <div className="flex shrink-0 flex-nowrap items-center gap-1 overflow-x-auto">
+                <div className="flex min-w-0 flex-wrap items-center gap-1">
                 <IconBtn title="Copy status" onClick={() => void navigator.clipboard.writeText(status)}>
                   <Copy />
                 </IconBtn>
