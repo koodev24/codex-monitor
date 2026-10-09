@@ -4,9 +4,12 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   Archive,
   ArchiveRestore,
+  ArrowDown,
   ArrowDownToLine,
   ArrowLeftRight,
+  ArrowUp,
   Check,
+  ChevronsUpDown,
   Coins,
   Copy,
   Download,
@@ -39,6 +42,7 @@ import {
 } from "@/components/ui/resizable";
 import { useGroupRef } from "react-resizable-panels";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
@@ -299,7 +303,16 @@ export default function App() {
     });
   }, [snap, sortKey, sortAsc]);
 
-  const arrow = (key: SortKey) => (sortKey === key ? (sortAsc ? " ▲" : " ▼") : " ↕");
+  const arrow = (key: SortKey) =>
+    sortKey === key ? (
+      sortAsc ? (
+        <ArrowUp className="size-3" aria-hidden />
+      ) : (
+        <ArrowDown className="size-3" aria-hidden />
+      )
+    ) : (
+      <ChevronsUpDown className="size-3 opacity-50" aria-hidden />
+    );
 
   async function pickExportFile() {
     const path = await save({
@@ -371,7 +384,7 @@ export default function App() {
                       <TableRow>
                         <TableHead>
                           <button
-                            className="font-bold hover:text-primary"
+                            className="inline-flex items-center gap-1 font-bold hover:text-primary"
                             onClick={() => void dispatch(cycleSort("email"))}
                           >
                             Account Email{arrow("email")}
@@ -379,7 +392,7 @@ export default function App() {
                         </TableHead>
                         <TableHead>
                           <button
-                            className="font-bold hover:text-primary"
+                            className="inline-flex items-center gap-1 font-bold hover:text-primary"
                             onClick={() => void dispatch(cycleSort("quota"))}
                           >
                             Quota{arrow("quota")}
@@ -387,7 +400,7 @@ export default function App() {
                         </TableHead>
                         <TableHead>
                           <button
-                            className="font-bold hover:text-primary"
+                            className="inline-flex items-center gap-1 font-bold hover:text-primary"
                             onClick={() => void dispatch(cycleSort("reset"))}
                           >
                             Reset{arrow("reset")}
@@ -420,6 +433,7 @@ export default function App() {
                               </span>
                             </TableCell>
                             <TableCell
+                              className="tabular-nums"
                               title={
                                 weekly
                                   ? `Used ${weekly.used_percent ?? "?"}%`
@@ -442,7 +456,7 @@ export default function App() {
                               )}
                             </TableCell>
                             <TableCell
-                              className="max-w-56"
+                              className="max-w-56 tabular-nums"
                               title={
                                 hasShort ? `${shortReset} (5h) • ${weeklyReset} (weekly)` : weeklyReset
                               }
@@ -532,15 +546,25 @@ export default function App() {
             onResize={(size) => setToolsShort(size.asPercentage < 20)}
           >
             <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border bg-card p-2">
-              <div className="flex min-h-8 shrink-0 items-center gap-2">
-                <p
-                  className="min-w-0 flex-1 truncate px-1 text-xs text-muted-foreground"
-                  title={status}
-                >
-                  {anyBusy ? "Working… " : ""}
-                  {updateProgress !== null ? `Downloading update ${updateProgress}%… ` : ""}
-                  {status}
-                </p>
+              <div className="flex min-h-9 shrink-0 items-center gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                  <span
+                    aria-hidden
+                    className={
+                      anyBusy
+                        ? "size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
+                        : "size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
+                    }
+                  />
+                  <p
+                    className="min-w-0 flex-1 truncate px-1 text-xs text-muted-foreground"
+                    title={status}
+                  >
+                    {anyBusy ? "Working… " : ""}
+                    {updateProgress !== null ? `Downloading update ${updateProgress}%… ` : ""}
+                    {status}
+                  </p>
+                </div>
                 <div className="flex shrink-0 flex-nowrap items-center gap-1 overflow-x-auto">
                 <IconBtn title="Copy status" onClick={() => void navigator.clipboard.writeText(status)}>
                   <Copy />
@@ -558,6 +582,7 @@ export default function App() {
                 <IconBtn title="Import data" busyKey="data:import" onClick={() => void pickImportFile()}>
                   <Upload />
                 </IconBtn>
+                <Separator orientation="vertical" />
                 <IconBtn title="Add account via Codex login" onClick={startLoginUi}>
                   <UserPlus />
                 </IconBtn>
@@ -592,12 +617,14 @@ export default function App() {
                 >
                   <RefreshCw />
                 </IconBtn>
+                <Separator orientation="vertical" />
                 <IconBtn
                   title={snap?.show_archived ? "Hide archived accounts" : "Show archived accounts"}
                   onClick={() => void dispatch(toggleArchivedVisibility())}
                 >
                   {snap?.show_archived ? <EyeOff /> : <Eye />}
                 </IconBtn>
+                <Separator orientation="vertical" />
                 <IconBtn
                   title="Check for updates"
                   busyKey="update:check"

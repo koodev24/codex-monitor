@@ -175,6 +175,12 @@ body {
   overflow: visible;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse {
+    animation: none;
+  }
+}
+
 .disable-transitions,
 .disable-transitions *,
 .disable-transitions *::before,
