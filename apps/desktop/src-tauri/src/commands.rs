@@ -847,59 +847,131 @@ pub fn open_login_url(url: String) -> Result<String, String> {
     }
 }
 
+/// Bundle identifier of the Codex desktop app. Display names drift
+/// ("Codex" vs "ChatGPT") but the bundle id is stable, so discovery keys
+/// off it instead of a hardcoded app name.
+#[cfg(target_os = "macos")]
+const CODEX_BUNDLE_ID: &str = "com.openai.codex";
+
+/// Resolve the app bundle path, rename-proof: Spotlight by bundle id
+/// first (no permissions needed), LaunchServices lookup second.
+#[cfg(target_os = "macos")]
+fn codex_bundle_path() -> Option<String> {
+    if let Ok(out) = Command::new("mdfind")
+        .arg(format!(
+            "kMDItemCFBundleIdentifier == '{}'",
+            CODEX_BUNDLE_ID
+        ))
+        .output()
+    {
+        if out.status.success() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let path = line.trim().to_string();
+                if path.ends_with(".app") && std::path::Path::new(&path).exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    let out = Command::new("osascript")
+        .args([
+            "-e",
+            &format!(
+                "POSIX path of (path to application id \"{}\")",
+                CODEX_BUNDLE_ID
+            ),
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if path.is_empty() {
+        return None;
+    }
+    Some(path)
+}
+
+/// True while any process still runs from inside the given bundle.
+/// Plain substring match on full command lines (no regex, no name
+/// guessing); helpers count too, so we wait out the whole teardown,
+/// state flush and file locks included. Unknown output keeps waiting
+/// rather than risking an early reopen.
+#[cfg(target_os = "macos")]
+fn bundle_still_running(bundle_path: &str) -> bool {
+    let out = match Command::new("ps").args(["-ax", "-o", "command="]).output() {
+        Ok(o) if o.status.success() => o,
+        _ => return true,
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout.lines().any(|line| line.contains(bundle_path))
+}
+
 #[tauri::command]
 pub fn restart_codex() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
-        // Ask Codex to quit gracefully. Failure here is non-fatal: the app
-        // may already be closed, in which case we just launch it below.
+        let bundle = codex_bundle_path();
+        // Graceful quit keeps the long-proven name form; only the reopen
+        // step below needed hardening. A failing quit is non-fatal: the app
+        // may already be closed.
         let quit = Command::new("osascript")
             .args(["-e", "tell application \"Codex\" to quit"])
             .output();
         if let Err(e) = &quit {
             return Err(format!("Could not ask Codex to quit: {e}"));
         }
-        // Wait until the old process is actually gone before relaunching.
-        // `open -a` while the previous instance is still terminating fails
-        // with LSOpenURLsWithCompletionHandler error -600 (procNotFound):
-        // the app ends up closed and never reopened.
-        let mut gone = false;
-        for _ in 0..40 {
-            let alive = Command::new("pgrep")
-                .args(["-x", "Codex"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(true);
-            if !alive {
-                gone = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        if !gone {
-            return Err(
-                "Codex is still closing (close it manually, then reopen it).".into(),
-            );
-        }
-        // Grace period so LaunchServices releases the old instance.
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        for attempt in 0..2 {
-            if attempt > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(1500));
-            }
-            match Command::new("open").args(["-a", "Codex"]).output() {
-                Ok(o) if o.status.success() => return Ok("Restarted the Codex app.".into()),
-                Ok(o) if attempt == 1 => {
-                    let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                    if detail.is_empty() {
-                        return Err("Could not reopen Codex.".into());
-                    }
-                    return Err(format!("Could not reopen Codex: {detail}"));
+        if let Some(ref path) = bundle {
+            let mut gone = false;
+            for _ in 0..40 {
+                if !bundle_still_running(path) {
+                    gone = true;
+                    break;
                 }
-                _ => {}
+                std::thread::sleep(std::time::Duration::from_millis(250));
             }
+            if !gone {
+                return Err(
+                    "Codex is still closing (close it manually, then reopen it).".into(),
+                );
+            }
+            // Settle so file locks flush and LaunchServices releases the old
+            // instance; reopening into a half-torn-down app is what used to
+            // come back with a broken profile sheet.
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            for attempt in 0..2 {
+                if attempt > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                }
+                match Command::new("open").arg(path).output() {
+                    Ok(o) if o.status.success() => {
+                        return Ok("Restarted the Codex app.".into())
+                    }
+                    Ok(o) if attempt == 1 => {
+                        let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                        if detail.is_empty() {
+                            return Err("Could not reopen Codex.".into());
+                        }
+                        return Err(format!("Could not reopen Codex: {detail}"));
+                    }
+                    _ => {}
+                }
+            }
+            return Err("Could not reopen Codex.".into());
         }
-        Err("Could not reopen Codex.".into())
+        // Last resort when the bundle can't be resolved: legacy name lookup.
+        match Command::new("open").args(["-a", "Codex"]).output() {
+            Ok(o) if o.status.success() => Ok("Restarted the Codex app.".into()),
+            Ok(o) => {
+                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                if detail.is_empty() {
+                    return Err("Could not reopen Codex.".into());
+                }
+                Err(format!("Could not reopen Codex: {detail}"))
+            }
+            Err(e) => Err(format!("Could not reopen Codex: {e}")),
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
