@@ -61,7 +61,9 @@ jobs:
 
       - name: Typecheck + unit tests (frontend shape)
         working-directory: apps/desktop
-        run: npm run build
+        run: |
+          npm run build
+          npm test
 
       - name: Rust tests + clippy
         working-directory: apps/desktop/src-tauri
