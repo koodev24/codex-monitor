@@ -477,6 +477,26 @@ mod tests {
     }
 
     #[test]
+    fn unknown_auth_fields_survive_struct_round_trip() {
+        let (svc, _dir) = temp_service("passthrough");
+        write_json(&svc.auth_file_path, &serde_json::json!({
+            "auth_mode": "chatgpt",
+            "future_top": {"nested": [1, 2]},
+            "tokens": {
+                "access_token": "a", "refresh_token": "r",
+                "future_token_field": "keep-me"
+            },
+            "last_refresh": "2026-04-24T15:17:00.949966Z"}));
+        let snap = svc.load_snapshot().unwrap();
+        let path = svc.write_backup_snapshot("a@x.y", &snap).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["future_top"]["nested"], serde_json::json!([1, 2]));
+        assert_eq!(raw["tokens"]["future_token_field"], serde_json::json!("keep-me"));
+        assert_eq!(raw["tokens"]["access_token"], serde_json::json!("a"));
+    }
+
+    #[test]
     fn list_backup_emails_prefers_email_then_filename() {
         let (svc, _dir) = temp_service("list");
         svc.write_backup_snapshot("a@x.y", &fixture_snapshot("a@x.y", "2026-04-24T15:17:00Z"))

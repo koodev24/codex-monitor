@@ -116,6 +116,8 @@ pub struct ExchangedTokens {
     pub id_token: String,
     pub access_token: String,
     pub refresh_token: String,
+    #[serde(default, flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// Form-encoded authorization-code exchange, per upstream `OAuthClient`.

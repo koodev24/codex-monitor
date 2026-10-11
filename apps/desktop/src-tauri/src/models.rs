@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// One rate-limit window from the wham/usage API.
 /// Mirrors `RateLimitWindow` in codex_monitor_app/models.py.
@@ -75,6 +76,10 @@ pub struct AuthTokens {
     pub refresh_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    /// Unknown present/future fields pass through untouched so our
+    /// refresh/import/login cycles can never strip what Codex wrote.
+    #[serde(default, flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 /// Snapshot of ~/.codex/auth.json. Mirrors `AuthFileSnapshot`.
@@ -91,6 +96,10 @@ pub struct AuthFileSnapshot {
     /// Extra: backups carry the account email; active file usually doesn't.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// Unknown present/future fields pass through untouched so our
+    /// refresh/import/switch cycles can never strip what Codex wrote.
+    #[serde(default, flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
