@@ -722,9 +722,11 @@ fn finish_native_login(app: &AppHandle, state: &State<AppState>, code: String) {
             access_token: Some(tokens.access_token),
             refresh_token: Some(tokens.refresh_token),
             account_id,
+            extra: tokens.extra.clone(),
         }),
         last_refresh: Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()),
         email: None,
+        extra: Default::default(),
     };
     {
         let st = state_lock(state);
