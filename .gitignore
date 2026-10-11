@@ -24,3 +24,4 @@ apps/desktop/dist/
 *.nsis.zip
 *.app.tar.gz
 *.app.tar.gz.sig
+CodexMonitor-macOS.zip
