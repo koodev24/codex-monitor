@@ -1,11 +1,10 @@
-name: Build and Release Tauri v2 App
+name: Release v2 (Tauri)
 
-# v2 line ships on v2* tags (e.g. v2.0.0). The legacy PyInstaller workflow
-# ignores those tags (see tags-ignore there) so the two lines never race.
+# v2 line ships on v2* tags (e.g. v2.0.0). The legacy workflow only listens to
+# v1* tags, so the two lines never race. No branch-push triggers: releases are
+# cut by pushing a tag, so everyday pushes no longer burn 3 matrix runners.
 on:
   push:
-    branches:
-      - tauri-rewrite
     tags:
       - 'v2*'
   workflow_dispatch:

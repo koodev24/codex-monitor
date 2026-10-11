@@ -1,13 +1,11 @@
-name: Build and Release macOS App
+name: Release v1 legacy (PyInstaller)
 
+# Legacy Python line. Fires ONLY on real v1* release tags (or manual dispatch) —
+# everyday pushes to main no longer burn a macOS runner on a job that fails in seconds.
 on:
   push:
-    branches:
-      - main
     tags:
-      - 'v*'
-    tags-ignore:
-      - 'v2*'
+      - 'v1*'
   workflow_dispatch:
 
 permissions:
