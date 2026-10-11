@@ -8,8 +8,8 @@ import {
   ArrowDownToLine,
   ArrowLeftRight,
   ArrowUp,
-  Check,
   ChevronsUpDown,
+  CloudDownload,
   Coins,
   Copy,
   Download,
@@ -635,7 +635,7 @@ export default function App() {
                   busyKey="update:check"
                   onClick={() => void dispatch(checkUpdates(true))}
                 >
-                  <Check />
+                  <CloudDownload />
                 </IconBtn>
                 {updateReady && (
                   <IconBtn
