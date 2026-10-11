@@ -1,7 +1,7 @@
 # Codex Account Monitor
 
 [![GitHub release](https://img.shields.io/github/v/release/koodev24/codex-monitor)](https://github.com/koodev24/codex-monitor/releases/latest)
-[![Release build](https://img.shields.io/github/actions/workflow/status/koodev24/codex-monitor/tauri-v2.yml?label=release%20build)](https://github.com/koodev24/codex-monitor/actions)
+[![Release build](https://img.shields.io/github/actions/workflow/status/koodev24/codex-monitor/release-v2-tauri.yml?label=release%20build)](https://github.com/koodev24/codex-monitor/actions)
 ![macOS](https://img.shields.io/badge/macOS-supported-blue)
 ![Windows](https://img.shields.io/badge/Windows-supported-blue)
 ![Linux](https://img.shields.io/badge/Linux-supported-blue)
