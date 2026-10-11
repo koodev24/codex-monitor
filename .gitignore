@@ -8,6 +8,16 @@ dist/
 *.spec
 !CodexMonitor.spec
 
+# Secrets — never commit credentials or signing material
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+Tauri.signing.key*
+
 # macOS
 .DS_Store
 /.idea/
