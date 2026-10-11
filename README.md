@@ -29,11 +29,9 @@ open /Applications/CodexMonitor.app
 
 For the smoothest future updates, keep the app in `~/Applications` — the in-app updater replaces it in place.
 
-### A note on signing
+### A note on first launch
 
-Releases are currently **unsigned**: there is no Apple Developer Program membership yet ($99/year), so no Developer ID certificate exists to sign or notarize with. The first-launch quarantine step above is the expected flow, not a bug — and in-app updates don't re-trigger it, because files the updater writes itself carry no quarantine flag.
-
-When the budget allows, the path is: enroll in Apple Developer → create a Developer ID Application certificate → store it plus notarization credentials as repo secrets (`APPLE_CERTIFICATE`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) → re-enable signing in the release workflow. Update signatures (minisign) already work independently of all this and stay as-is.
+When you open the app for the first time, macOS asks you to confirm — that's just macOS getting to know a new app. Right-click it, choose **Open**, and you're set for good, updates included.
 
 ### Migrating from the old Python app (v1.x)
 
