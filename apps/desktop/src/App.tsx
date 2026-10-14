@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -272,6 +272,20 @@ export default function App() {
       unlisteners.forEach((u) => u());
     };
   }, [dispatch]);
+
+  const loggedVersion = useRef<string | null>(null);
+  useEffect(() => {
+    const v = snap?.app_version;
+    if (v && loggedVersion.current !== v) {
+      loggedVersion.current = v;
+      void api
+        .logMessage(`CodexMonitor v${v} started.`)
+        .then(() => {
+          void dispatch(refreshLogs());
+        })
+        .catch(() => undefined);
+    }
+  }, [snap?.app_version, dispatch]);
 
   useEffect(() => {
     const t = window.setTimeout(() => void dispatch(checkUpdates(false)), 1500);
@@ -571,6 +585,14 @@ export default function App() {
                     {updateProgress !== null ? `Downloading update ${updateProgress}%… ` : ""}
                     {status}
                   </p>
+                  {snap?.app_version ? (
+                    <span
+                      className="shrink-0 text-[11px] text-muted-foreground/70"
+                      title={`CodexMonitor v${snap.app_version}`}
+                    >
+                      v{snap.app_version}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="flex min-w-0 flex-wrap items-center gap-1">
                 <IconBtn title="Copy status" onClick={() => void navigator.clipboard.writeText(status)}>
@@ -633,7 +655,7 @@ export default function App() {
                 </IconBtn>
                 <Separator orientation="vertical" />
                 <IconBtn
-                  title="Check for updates"
+                  title={`Check for updates (v${snap?.app_version ?? "?"})`}
                   busyKey="update:check"
                   onClick={() => void dispatch(checkUpdates(true))}
                 >

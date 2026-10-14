@@ -52,6 +52,7 @@ export const api = {
   resets: (email: string) => invoke<ResetCreditsPayload | null>("get_resets", { email }),
   logs: () => invoke<string[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
+  logMessage: (message: string) => invoke<void>("log_message", { message }),
   exportData: (path: string) => invoke<string>("export_data", { path }),
   importData: (path: string) => invoke<string>("import_data", { path }),
   logout: () => invoke<string>("logout"),

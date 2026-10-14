@@ -487,6 +487,21 @@ pub fn clear_logs(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Append one line to the activity log from the frontend (update checks,
+/// installs, and other UI-side events the backend never sees). Clipped to
+/// 500 chars so a buggy caller cannot flood the file.
+#[tauri::command]
+pub fn log_message(state: State<AppState>, message: String) -> Result<(), String> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    const MAX_LEN: usize = 500;
+    let clipped: String = trimmed.chars().take(MAX_LEN).collect();
+    append_log(&state, &clipped);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn export_data(state: State<AppState>, path: String) -> Result<String, String> {
     let st = state_lock(&state);
@@ -1124,6 +1139,7 @@ pub fn all_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool {
         get_resets,
         get_logs,
         clear_logs,
+        log_message,
         export_data,
         import_data,
         logout,

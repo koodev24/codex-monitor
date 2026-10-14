@@ -1,8 +1,30 @@
-import { createAsyncThunk, createSlice, type PayloadAction } from "@reduxjs/toolkit";
+import {
+  createAsyncThunk,
+  createSlice,
+  type PayloadAction,
+  type ThunkDispatch,
+  type UnknownAction,
+} from "@reduxjs/toolkit";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { api } from "../lib/tauri";
+import { refreshLogs } from "./logsSlice";
 import type { ResetCreditsPayload } from "../lib/format";
 import type { RootState } from "./store";
+
+async function logUpdateEvent(
+  dispatch: ThunkDispatch<RootState, unknown, UnknownAction>,
+  message: string,
+) {
+  try {
+    await api.logMessage(message);
+  } catch {
+  }
+  try {
+    await dispatch(refreshLogs());
+  } catch {
+  }
+}
 
 export type ConfirmAction =
   | { kind: "remove"; email: string }
@@ -36,16 +58,22 @@ const initialState: UiState = {
 
 export const checkUpdates = createAsyncThunk<void, boolean, { state: RootState }>(
   "ui/checkUpdates",
-  async (manual, { dispatch }) => {
+  async (manual, { dispatch, getState }) => {
+    const current = getState().snapshot.snap?.app_version || "unknown";
     if (manual) {
       dispatch(setChecking(true));
       dispatch(setBusy({ key: "update:check", on: true }));
+      await logUpdateEvent(dispatch, `Checking for updates (current v${current})…`);
     }
     try {
       const update = await check();
       if (update) {
         dispatch(setUpdateReady(`Update ${update.version} ready to install.`));
-        dispatch(setStatus(`Update ${update.version} is available.`));
+        dispatch(setStatus(`Update ${update.version} is available (you're on v${current}).`));
+        await logUpdateEvent(
+          dispatch,
+          `Update check: v${update.version} available (current v${current}).`,
+        );
         if (manual) {
           dispatch(setBusy({ key: "update:install", on: true }));
           try {
@@ -62,9 +90,10 @@ export const checkUpdates = createAsyncThunk<void, boolean, { state: RootState }
                 }
               } else if (ev.event === "Finished") {
                 dispatch(setUpdateProgress(null));
-                dispatch(setStatus("Update installed, restarting…"));
+                dispatch(setStatus(`Update ${update.version} installed, restarting…`));
               }
             });
+            await logUpdateEvent(dispatch, `Update ${update.version} installed, restarting…`);
             await relaunch();
           } finally {
             dispatch(setBusy({ key: "update:install", on: false }));
@@ -72,9 +101,11 @@ export const checkUpdates = createAsyncThunk<void, boolean, { state: RootState }
         }
       } else {
         dispatch(setUpdateReady(null));
-        if (manual) dispatch(setStatus("You're already on the latest version."));
+        await logUpdateEvent(dispatch, `Update check: v${current} is the latest.`);
+        if (manual) dispatch(setStatus(`You're on v${current} — the latest version.`));
       }
     } catch (e) {
+      await logUpdateEvent(dispatch, `Update check failed (current v${current}): ${e}`);
       if (manual) dispatch(setStatus(`Update check failed: ${e}`));
     } finally {
       if (manual) {
@@ -87,19 +118,28 @@ export const checkUpdates = createAsyncThunk<void, boolean, { state: RootState }
 
 export const installUpdate = createAsyncThunk<void, void, { state: RootState }>(
   "ui/installUpdate",
-  async (_, { dispatch }) => {
+  async (_, { dispatch, getState }) => {
+    const current = getState().snapshot.snap?.app_version || "unknown";
     dispatch(setBusy({ key: "update:install", on: true }));
     try {
       const update = await check();
       if (!update) {
-        dispatch(setStatus("You're already on the latest version."));
+        dispatch(setStatus(`You're on v${current} — the latest version.`));
+        await logUpdateEvent(dispatch, `Install requested but v${current} is the latest.`);
         return;
       }
+      await logUpdateEvent(
+        dispatch,
+        `Downloading update v${update.version} (current v${current})…`,
+      );
       await update.downloadAndInstall((ev) => {
-        if (ev.event === "Finished") dispatch(setStatus("Update installed, restarting…"));
+        if (ev.event === "Finished")
+          dispatch(setStatus(`Update ${update.version} installed, restarting…`));
       });
+      await logUpdateEvent(dispatch, `Update ${update.version} installed, restarting…`);
       await relaunch();
     } catch (e) {
+      await logUpdateEvent(dispatch, `Update failed (current v${current}): ${e}`);
       dispatch(setStatus(`Update failed: ${e}`));
     } finally {
       dispatch(setBusy({ key: "update:install", on: false }));
