@@ -786,8 +786,14 @@ export default function App() {
                 onClick={() => {
                   void api
                     .restartCodex()
-                    .then((m) => dispatch(setStatus(m)))
-                    .catch((e) => dispatch(setStatus(`Restart failed: ${e}`)));
+                    .then((m) => {
+                      dispatch(setStatus(m));
+                      void dispatch(refreshLogs());
+                    })
+                    .catch((e) => {
+                      dispatch(setStatus(`Restart failed: ${e}`));
+                      void dispatch(refreshLogs());
+                    });
                   dispatch(setSwitchInfo(null));
                 }}
               >

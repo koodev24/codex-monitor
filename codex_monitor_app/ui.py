@@ -1762,7 +1762,9 @@ class CodexMonitorApp:
                 daemon=True,
             ).start()
             self._show_switch_success_dialog(email)
+            self._log_detail(f"Switched active account to {email}; auth.json replaced.")
         except Exception as error:
+            self._log_detail(f"Switch account to {email} failed: {error}.")
             self.status_var.set(f"Switch account failed: {error}")
 
     def fetch_backup_account_quota(self, email: str) -> None:
@@ -1778,6 +1780,22 @@ class CodexMonitorApp:
             daemon=True,
         ).start()
 
+    def _log_detail(self, message: str) -> None:
+        if not message:
+            return
+        line = self._timestamped_log_line(message)
+        try:
+            os.makedirs(os.path.dirname(LOCAL_LOG_FILE), exist_ok=True)
+            with open(LOCAL_LOG_FILE, "a", encoding="utf-8") as file:
+                file.write(f"{line}\n")
+        except OSError:
+            pass
+        if self.logs_expanded:
+            try:
+                self.root.after(0, self._refresh_log_textbox)
+            except Exception:
+                pass
+
     def restart_codex_app(self) -> None:
         if sys.platform != "darwin":
             self.status_var.set(
@@ -1785,37 +1803,144 @@ class CodexMonitorApp:
             )
             return
 
+        self._log_detail("Restart requested for Codex app.")
         self.status_var.set("Restarting Codex...")
         threading.Thread(target=self._bg_restart_codex_app, daemon=True).start()
 
     def _bg_restart_codex_app(self) -> None:
         try:
-            subprocess.run(
-                [
-                    "/usr/bin/osascript",
-                    "-e",
-                    'tell application "Codex" to quit',
-                ],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self._wait_for_codex_to_exit()
-            if self._open_codex_app():
-                message = "Requested Codex restart."
+            bundle_path = self._resolve_codex_bundle_path()
+            if bundle_path:
+                self._log_detail(f"Restart: resolved Codex bundle at {bundle_path}.")
             else:
-                message = "Requested Codex quit, but reopening Codex failed."
+                self._log_detail(
+                    "Restart: could not resolve Codex bundle path; will use name lookup."
+                )
+            try:
+                quit_result = subprocess.run(
+                    [
+                        "/usr/bin/osascript",
+                        "-e",
+                        'tell application "Codex" to quit',
+                    ],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=15,
+                )
+                quit_stderr = (quit_result.stderr or "").strip()
+                self._log_detail(
+                    "Restart: asked Codex to quit "
+                    f"(rc={quit_result.returncode}"
+                    f"{f', stderr={quit_stderr}' if quit_stderr else ''})."
+                )
+            except Exception as error:
+                self._log_detail(f"Restart: quit request failed: {error}.")
+            exited = self._wait_for_codex_to_exit(bundle_path)
+            if not exited:
+                message = (
+                    "Codex is still closing — close it manually, then reopen it. "
+                    "Auth switch already applied."
+                )
+                self._log_detail(
+                    "Restart: timed out waiting for Codex to exit; "
+                    "skipped reopen to avoid relaunching a half-closed app."
+                )
+                self.root.after(0, lambda m=message: self.status_var.set(m))
+                return
+            # Settle so file locks flush and LaunchServices releases the old
+            # instance; reopening into a half-torn-down app is what used to
+            # come back with a broken profile sheet.
+            self._log_detail("Restart: Codex exited; settling 2s before reopen.")
+            time.sleep(2)
+            reopened, reopen_detail = self._open_codex_app(bundle_path)
+            if reopened:
+                message = "Requested Codex restart."
+                self._log_detail(f"Restart: reopen succeeded ({reopen_detail}).")
+            else:
+                message = f"Requested Codex quit, but reopening Codex failed. {reopen_detail}"
+                self._log_detail(f"Restart: reopen failed. {reopen_detail}")
         except Exception as error:
             message = f"Failed to restart Codex: {error}"
+            self._log_detail(f"Restart: unexpected failure: {error}.")
 
         self.root.after(0, lambda m=message: self.status_var.set(m))
 
-    def _wait_for_codex_to_exit(self) -> None:
-        deadline = time.time() + 8
+    def _resolve_codex_bundle_path(self) -> Optional[str]:
+        candidates: List[str] = []
+        try:
+            result = subprocess.run(
+                [
+                    "/usr/bin/mdfind",
+                    "kMDItemCFBundleIdentifier == 'com.openai.codex'",
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+            )
+            for line in (result.stdout or "").splitlines():
+                path = line.strip()
+                if path.endswith(".app") and os.path.exists(path):
+                    candidates.append(path)
+        except Exception as error:
+            self._log_detail(f"Restart: bundle lookup via mdfind failed: {error}.")
+        if not candidates:
+            try:
+                result = subprocess.run(
+                    [
+                        "/usr/bin/osascript",
+                        "-e",
+                        'POSIX path of (path to application id "com.openai.codex")',
+                    ],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=15,
+                )
+                path = (result.stdout or "").strip()
+                if path.endswith(".app") and os.path.exists(path):
+                    candidates.append(path)
+            except Exception as error:
+                self._log_detail(f"Restart: bundle lookup via LaunchServices failed: {error}.")
+        for fallback in (
+            os.path.expanduser("~/Applications/Codex.app"),
+            "/Applications/Codex.app",
+        ):
+            if os.path.exists(fallback) and fallback not in candidates:
+                candidates.append(fallback)
+        return candidates[0] if candidates else None
+
+    def _wait_for_codex_to_exit(self, bundle_path: Optional[str] = None) -> bool:
+        deadline = time.time() + 10
         while time.time() < deadline:
-            if not self._is_codex_app_running():
-                return
+            if bundle_path:
+                if not self._bundle_still_running(bundle_path):
+                    return True
+            elif not self._is_codex_app_running():
+                return True
             time.sleep(0.25)
+        return False
+
+    def _bundle_still_running(self, bundle_path: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["/bin/ps", "-ax", "-o", "command="],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+            )
+        except Exception:
+            # Unknown output keeps waiting rather than risking an early reopen.
+            return True
+        if result.returncode != 0:
+            return True
+        return any(bundle_path in line for line in (result.stdout or "").splitlines())
 
     def _is_codex_app_running(self) -> bool:
         try:
@@ -1829,30 +1954,56 @@ class CodexMonitorApp:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
+                timeout=15,
             )
         except Exception:
             return False
         return result.stdout.strip().lower() == "true"
 
-    def _open_codex_app(self) -> bool:
-        commands = [
-            ["/usr/bin/open", "-b", "com.openai.codex"],
-            ["/usr/bin/open", "/Applications/Codex.app"],
-            ["/usr/bin/open", "-a", "Codex"],
-        ]
+    def _open_codex_app(self, bundle_path: Optional[str] = None) -> Tuple[bool, str]:
+        commands: List[List[str]] = []
+        if bundle_path:
+            commands.append(["/usr/bin/open", bundle_path])
+        commands.extend(
+            [
+                ["/usr/bin/open", "-b", "com.openai.codex"],
+                ["/usr/bin/open", os.path.expanduser("~/Applications/Codex.app")],
+                ["/usr/bin/open", "/Applications/Codex.app"],
+                ["/usr/bin/open", "-a", "Codex"],
+            ]
+        )
+        attempts: List[str] = []
         for command in commands:
-            try:
-                result = subprocess.run(
-                    command,
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+            label = " ".join(command)
+            for attempt in (1, 2):
+                if attempt > 1:
+                    time.sleep(1.5)
+                try:
+                    result = subprocess.run(
+                        command,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        timeout=30,
+                    )
+                except Exception as error:
+                    attempts.append(f"{label} attempt {attempt}: error {error}")
+                    self._log_detail(f"Restart: reopen {label} attempt {attempt} error: {error}.")
+                    continue
+                stderr_text = (result.stderr or "").strip()
+                self._log_detail(
+                    f"Restart: reopen {label} attempt {attempt} rc={result.returncode}"
+                    f"{f' stderr={stderr_text}' if stderr_text else ''}."
                 )
-            except Exception:
-                continue
-            if result.returncode == 0:
-                return True
-        return False
+                if result.returncode == 0:
+                    return True, label
+                attempts.append(
+                    f"{label} attempt {attempt}: rc={result.returncode}"
+                    f"{f' ({stderr_text})' if stderr_text else ''}"
+                )
+        detail = "; ".join(attempts) if attempts else "no reopen command attempted"
+        return False, f"attempts: {detail}."
 
     def toggle_show_archived(self) -> None:
         self.show_archived = not self.show_archived
