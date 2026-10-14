@@ -287,6 +287,18 @@ export default function App() {
     }
   }, [snap?.app_version, dispatch]);
 
+  const lastLoggedStatus = useRef<string | null>(null);
+  useEffect(() => {
+    if (!status || lastLoggedStatus.current === status) return;
+    lastLoggedStatus.current = status;
+    void api
+      .logMessage(status)
+      .then(() => {
+        void dispatch(refreshLogs());
+      })
+      .catch(() => undefined);
+  }, [status, dispatch]);
+
   useEffect(() => {
     const t = window.setTimeout(() => void dispatch(checkUpdates(false)), 1500);
     const id = window.setInterval(() => void dispatch(checkUpdates(false)), 6 * 3600 * 1000);

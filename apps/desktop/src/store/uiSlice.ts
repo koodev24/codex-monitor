@@ -12,6 +12,14 @@ import { refreshLogs } from "./logsSlice";
 import type { ResetCreditsPayload } from "../lib/format";
 import type { RootState } from "./store";
 
+function friendlyUpdateError(e: unknown): string | null {
+  const raw = `${e}`;
+  if (/fallback platforms|not found in the response/i.test(raw)) {
+    return "Update feed is incomplete right now (a release may still be publishing) — try again in a few minutes.";
+  }
+  return null;
+}
+
 async function logUpdateEvent(
   dispatch: ThunkDispatch<RootState, unknown, UnknownAction>,
   message: string,
@@ -70,10 +78,12 @@ export const checkUpdates = createAsyncThunk<void, boolean, { state: RootState }
       if (update) {
         dispatch(setUpdateReady(`Update ${update.version} ready to install.`));
         dispatch(setStatus(`Update ${update.version} is available (you're on v${current}).`));
-        await logUpdateEvent(
-          dispatch,
-          `Update check: v${update.version} available (current v${current}).`,
-        );
+        if (!manual) {
+          await logUpdateEvent(
+            dispatch,
+            `Update check: v${update.version} available (current v${current}).`,
+          );
+        }
         if (manual) {
           dispatch(setBusy({ key: "update:install", on: true }));
           try {
@@ -101,12 +111,15 @@ export const checkUpdates = createAsyncThunk<void, boolean, { state: RootState }
         }
       } else {
         dispatch(setUpdateReady(null));
-        await logUpdateEvent(dispatch, `Update check: v${current} is the latest.`);
-        if (manual) dispatch(setStatus(`You're on v${current} — the latest version.`));
+        if (manual) {
+          dispatch(setStatus(`You're on v${current} — the latest version.`));
+        } else {
+          await logUpdateEvent(dispatch, `Update check: v${current} is the latest.`);
+        }
       }
     } catch (e) {
       await logUpdateEvent(dispatch, `Update check failed (current v${current}): ${e}`);
-      if (manual) dispatch(setStatus(`Update check failed: ${e}`));
+      if (manual) dispatch(setStatus(friendlyUpdateError(e) ?? `Update check failed: ${e}`));
     } finally {
       if (manual) {
         dispatch(setChecking(false));
@@ -140,7 +153,7 @@ export const installUpdate = createAsyncThunk<void, void, { state: RootState }>(
       await relaunch();
     } catch (e) {
       await logUpdateEvent(dispatch, `Update failed (current v${current}): ${e}`);
-      dispatch(setStatus(`Update failed: ${e}`));
+      dispatch(setStatus(friendlyUpdateError(e) ?? `Update failed: ${e}`));
     } finally {
       dispatch(setBusy({ key: "update:install", on: false }));
     }
