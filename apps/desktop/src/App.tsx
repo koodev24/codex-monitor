@@ -113,6 +113,7 @@ import {
   installUpdate,
   selectAnyBusy,
   selectBusy,
+  setBusy,
   setConfirm,
   setResetsView,
   setStatus,
@@ -200,6 +201,7 @@ export default function App() {
   const loginDone = useAppSelector((s) => s.login.done);
   const loginStarting = useAppSelector((s) => s.login.starting);
   const confirmBusy = useAppSelector(selectBusy("confirm"));
+  const restartBusy = useAppSelector(selectBusy("restart-codex"));
   const { dark, toggle } = useTheme();
   const panelsRef = useGroupRef();
   const [toolsShort, setToolsShort] = useState(false);
@@ -783,7 +785,10 @@ export default function App() {
                 Later
               </Button>
               <Button
+                disabled={restartBusy}
                 onClick={() => {
+                  dispatch(setBusy({ key: "restart-codex", on: true }));
+                  dispatch(setStatus("Restarting Codex…"));
                   void api
                     .restartCodex()
                     .then((m) => {
@@ -793,6 +798,9 @@ export default function App() {
                     .catch((e) => {
                       dispatch(setStatus(`Restart failed: ${e}`));
                       void dispatch(refreshLogs());
+                    })
+                    .finally(() => {
+                      dispatch(setBusy({ key: "restart-codex", on: false }));
                     });
                   dispatch(setSwitchInfo(null));
                 }}

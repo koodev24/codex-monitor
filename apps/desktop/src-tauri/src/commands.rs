@@ -908,6 +908,137 @@ fn bundle_still_running(bundle_path: &str) -> bool {
     stdout.lines().any(|line| line.contains(bundle_path))
 }
 
+/// Ask Codex to quit gracefully. Bundle-id form first (rename-proof),
+/// display-name form as fallback. A failing quit is non-fatal: the app
+/// may already be closed.
+#[cfg(target_os = "macos")]
+fn quit_codex(state: &AppState) {
+    let scripts = [
+        format!("tell application id \"{CODEX_BUNDLE_ID}\" to quit"),
+        "tell application \"Codex\" to quit".to_string(),
+    ];
+    for script in &scripts {
+        match Command::new("osascript").args(["-e", script]).output() {
+            Err(e) => {
+                append_log(state, &format!("Restart: quit via '{script}' could not run: {e}."));
+            }
+            Ok(o) => {
+                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                if o.status.success() {
+                    append_log(state, &format!("Restart: quit requested ({script})."));
+                    return;
+                }
+                if detail.is_empty() {
+                    append_log(state, &format!("Restart: quit via '{script}' returned {0}; trying next form.", o.status));
+                } else {
+                    append_log(state, &format!("Restart: quit via '{script}' noted ({detail}); trying next form."));
+                }
+            }
+        }
+    }
+    append_log(state, "Restart: quit requests done; continuing (app may already be closed).");
+}
+
+/// Name-based fallback for "is Codex running", used only when the bundle
+/// path could not be resolved.
+#[cfg(target_os = "macos")]
+fn codex_name_running() -> bool {
+    match Command::new("osascript")
+        .args(["-e", "application \"Codex\" is running"])
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout).trim().eq_ignore_ascii_case("true")
+        }
+        _ => false,
+    }
+}
+
+/// Wait up to ~20s for full teardown (helpers and file locks included).
+/// Slow quits are exactly what used to strand users with a killed-but-
+/// never-reopened app, so patience here is the fix, not the wait itself.
+#[cfg(target_os = "macos")]
+fn wait_for_codex_exit(state: &AppState, bundle: Option<&str>) -> bool {
+    for _ in 0..80 {
+        let gone = match bundle {
+            Some(path) => !bundle_still_running(path),
+            None => !codex_name_running(),
+        };
+        if gone {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    append_log(state, "Restart: timed out waiting for Codex to exit; skipped reopen to avoid relaunching a half-closed app.");
+    false
+}
+
+/// True once the bundle process is observable again after reopen.
+#[cfg(target_os = "macos")]
+fn wait_for_codex_back(bundle: Option<&str>) -> bool {
+    let Some(path) = bundle else { return true };
+    for _ in 0..40 {
+        if bundle_still_running(path) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    false
+}
+
+/// Reopen Codex and verify it actually came back. An `open` exit status
+/// of zero only means LaunchServices accepted the request, so every
+/// accepted reopen is followed by a process poll before it counts.
+#[cfg(target_os = "macos")]
+fn reopen_codex(state: &AppState, bundle: Option<&str>) -> Result<String, String> {
+    let mut cmds: Vec<Vec<String>> = Vec::new();
+    if let Some(path) = bundle {
+        cmds.push(vec!["open".to_string(), path.to_string()]);
+    }
+    cmds.push(vec!["open".to_string(), "-b".to_string(), CODEX_BUNDLE_ID.to_string()]);
+    cmds.push(vec!["open".to_string(), "-a".to_string(), "Codex".to_string()]);
+    let mut attempts: Vec<String> = Vec::new();
+    for round in 0..3 {
+        if round > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        }
+        for cmd in &cmds {
+            let label = cmd.join(" ");
+            let out = Command::new(&cmd[0]).args(&cmd[1..]).output();
+            match out {
+                Err(e) => {
+                    let entry = format!("{label}: error {e}");
+                    append_log(state, &format!("Restart: reopen {entry}."));
+                    attempts.push(entry);
+                }
+                Ok(o) => {
+                    let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    if !o.status.success() {
+                        let entry = if detail.is_empty() {
+                            format!("{label}: rc={}", o.status)
+                        } else {
+                            format!("{label}: rc={} ({detail})", o.status)
+                        };
+                        append_log(state, &format!("Restart: reopen {entry}."));
+                        attempts.push(entry);
+                        continue;
+                    }
+                    if wait_for_codex_back(bundle) {
+                        append_log(state, &format!("Restart: reopen verified ({label}); Codex is running again."));
+                        return Ok("Restarted the Codex app.".into());
+                    }
+                    let entry = format!("{label}: accepted but Codex did not reappear");
+                    append_log(state, &format!("Restart: reopen {entry}; retrying."));
+                    attempts.push(entry);
+                }
+            }
+        }
+    }
+    let msg = format!("Could not reopen Codex (attempts: {}).", attempts.join("; "));
+    append_log(state, &format!("Restart: {msg}"));
+    Err(msg)
+}
+
 #[tauri::command]
 pub fn restart_codex(state: State<AppState>) -> Result<String, String> {
     #[cfg(target_os = "macos")]
@@ -916,111 +1047,22 @@ pub fn restart_codex(state: State<AppState>) -> Result<String, String> {
         let bundle = codex_bundle_path();
         match &bundle {
             Some(path) => append_log(&state, &format!("Restart: resolved Codex bundle at {path}.")),
-            None => append_log(&state, "Restart: could not resolve Codex bundle path; will use name lookup."),
+            None => append_log(&state, "Restart: could not resolve Codex bundle path; will use id/name lookup."),
         }
-        // Graceful quit keeps the long-proven name form; only the reopen
-        // step below needed hardening. A failing quit is non-fatal: the app
-        // may already be closed.
-        let quit = Command::new("osascript")
-            .args(["-e", "tell application \"Codex\" to quit"])
-            .output();
-        match &quit {
-            Err(e) => {
-                let msg = format!("Could not ask Codex to quit: {e}");
-                append_log(&state, &format!("Restart: {msg}"));
-                return Err(msg);
-            }
-            Ok(o) => {
-                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                if o.status.success() {
-                    append_log(&state, "Restart: asked Codex to quit.");
-                } else if detail.is_empty() {
-                    append_log(&state, "Restart: quit request returned non-zero; continuing (app may already be closed).");
-                } else {
-                    append_log(&state, &format!("Restart: quit request noted ({detail}); continuing."));
-                }
-            }
+        quit_codex(&state);
+        if !wait_for_codex_exit(&state, bundle.as_deref()) {
+            return Err("Codex is still closing (close it manually, then reopen it).".into());
         }
-        if let Some(ref path) = bundle {
-            let mut gone = false;
-            for _ in 0..40 {
-                if !bundle_still_running(path) {
-                    gone = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(250));
-            }
-            if !gone {
-                let msg = "Codex is still closing (close it manually, then reopen it).";
-                append_log(&state, "Restart: timed out waiting for Codex to exit; skipped reopen to avoid relaunching a half-closed app.");
-                return Err(msg.into());
-            }
-            append_log(&state, "Restart: Codex exited; settling 2s before reopen.");
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            let mut attempts: Vec<String> = Vec::new();
-            for attempt in 0..2 {
-                if attempt > 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(1500));
-                }
-                match Command::new("open").arg(path).output() {
-                    Ok(o) if o.status.success() => {
-                        append_log(&state, &format!("Restart: reopen succeeded (open {path})."));
-                        return Ok("Restarted the Codex app.".into())
-                    }
-                    Ok(o) => {
-                        let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                        let entry = if detail.is_empty() {
-                            format!("open {path} attempt {}: rc={}", attempt + 1, o.status)
-                        } else {
-                            format!("open {path} attempt {}: rc={} ({detail})", attempt + 1, o.status)
-                        };
-                        append_log(&state, &format!("Restart: reopen {entry}."));
-                        attempts.push(entry);
-                        if attempt == 1 {
-                            let msg = if detail.is_empty() {
-                                "Could not reopen Codex.".to_string()
-                            } else {
-                                format!("Could not reopen Codex: {detail}")
-                            };
-                            append_log(&state, &format!("Restart: reopen failed. attempts: {}.", attempts.join("; ")));
-                            return Err(msg);
-                        }
-                    }
-                    Err(e) => {
-                        let entry = format!("open {path} attempt {}: error {e}", attempt + 1);
-                        append_log(&state, &format!("Restart: reopen {entry}."));
-                        attempts.push(entry);
-                    }
-                }
-            }
-            let msg = "Could not reopen Codex.".to_string();
-            append_log(&state, &format!("Restart: reopen failed. attempts: {}.", attempts.join("; ")));
-            return Err(msg);
-        }
-        match Command::new("open").args(["-a", "Codex"]).output() {
-            Ok(o) if o.status.success() => {
-                append_log(&state, "Restart: reopen succeeded (open -a Codex).");
-                Ok("Restarted the Codex app.".into())
-            }
-            Ok(o) => {
-                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                let msg = if detail.is_empty() {
-                    "Could not reopen Codex.".to_string()
-                } else {
-                    format!("Could not reopen Codex: {detail}")
-                };
-                append_log(&state, &format!("Restart: {msg}"));
-                Err(msg)
-            }
-            Err(e) => {
-                let msg = format!("Could not reopen Codex: {e}");
-                append_log(&state, &format!("Restart: {msg}"));
-                Err(msg)
-            }
-        }
+        // Settle so file locks flush and LaunchServices releases the old
+        // instance; reopening into a half-torn-down app is what used to
+        // come back with a broken profile sheet.
+        append_log(&state, "Restart: Codex exited; settling 2s before reopen.");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        reopen_codex(&state, bundle.as_deref())
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = &state;
         Err("Restarting the Codex app is only supported on macOS.".into())
     }
 }
