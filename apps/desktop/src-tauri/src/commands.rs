@@ -954,6 +954,40 @@ fn quit_codex(state: &AppState) {
     append_log(state, "Restart: quit requests done; continuing (app may already be closed).");
 }
 
+/// True when the auth file parses and carries an access token. Reads the
+/// file directly (no state lock) so the check stays cheap and lock-free.
+#[cfg(target_os = "macos")]
+fn auth_file_has_token(auth_path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(auth_path) else { return false };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    v.get("tokens")
+        .and_then(|t| t.get("access_token"))
+        .and_then(|t| t.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+}
+
+/// Refuse to restart into a torn credential file. Real logs show quit
+/// landing in the same second as an auth refresh; quitting the app while it
+/// is mid-rotation leaves a half-written auth.json that the relaunched app
+/// loads as an incomplete profile. Healthy files pass on the first read.
+#[cfg(target_os = "macos")]
+fn wait_for_auth_settle(state: &AppState, auth_path: &Path) -> bool {
+    if auth_file_has_token(auth_path) {
+        return true;
+    }
+    append_log(state, "Restart: auth file mid-change; waiting up to 5s for it to settle.");
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if auth_file_has_token(auth_path) {
+            append_log(state, "Restart: auth file settled.");
+            return true;
+        }
+    }
+    append_log(state, "Restart: auth file still has no usable token; aborting restart to avoid launching into a torn profile.");
+    false
+}
+
 /// Name-based fallback for "is Codex running", used only when the bundle
 /// path could not be resolved.
 #[cfg(target_os = "macos")]
@@ -1098,6 +1132,12 @@ pub fn restart_codex(state: State<AppState>) -> Result<String, String> {
             Some(path) => append_log(&state, &format!("Restart: resolved Codex bundle at {path}.")),
             None => append_log(&state, "Restart: could not resolve Codex bundle path; will use id/name lookup."),
         }
+        let auth_path = state_lock(&state).auth.auth_file_path.clone();
+        if !auth_path.is_file() {
+            append_log(&state, "Restart: no auth file yet; restarting anyway (fresh install).");
+        } else if !wait_for_auth_settle(&state, &auth_path) {
+            return Err("Codex auth file is changing right now; try the restart again in a few seconds.".into());
+        }
         quit_codex(&state);
         if !wait_for_codex_exit(&state, bundle.as_deref()) {
             return Err("Codex is still closing (close it manually, then reopen it).".into());
@@ -1208,6 +1248,23 @@ mod real_store_tests {
         };
         let text = serde_json::to_string(&snap).expect("snapshot must serialize");
         assert!(text.contains("accounts"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn auth_token_check_accepts_only_usable_files() {
+        let dir = std::env::temp_dir().join(format!("codex-restart-guard-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        assert!(!auth_file_has_token(&path));
+        fs::write(&path, "{ torn json").unwrap();
+        assert!(!auth_file_has_token(&path));
+        fs::write(&path, r#"{"tokens": {}}"#).unwrap();
+        assert!(!auth_file_has_token(&path));
+        fs::write(&path, r#"{"tokens": {"access_token": "live"}}"#).unwrap();
+        assert!(auth_file_has_token(&path));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
