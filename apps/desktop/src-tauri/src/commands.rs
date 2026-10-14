@@ -988,70 +988,104 @@ fn wait_for_codex_exit(state: &AppState, bundle: Option<&str>) -> bool {
     false
 }
 
-/// True once the bundle process is observable again after reopen.
-#[cfg(target_os = "macos")]
-fn wait_for_codex_back(bundle: Option<&str>) -> bool {
-    let Some(path) = bundle else { return true };
-    for _ in 0..40 {
-        if bundle_still_running(path) {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-    false
-}
-
-/// Reopen Codex and verify it actually came back. An `open` exit status
-/// of zero only means LaunchServices accepted the request, so every
-/// accepted reopen is followed by a process poll before it counts.
+/// One launch in flight at most. Firing another `open` while a first launch
+/// is still invisible stacks concurrent instances that contend for the Codex
+/// profile and come back torn (usage data gone), so every attempt first
+/// checks no bundle process exists, `open` forms advance only on immediate
+/// rejection, and an accepted `open` gets a long grace period before anything
+/// else is attempted. The name form is a last resort for unresolved bundles
+/// only: it can match a stale duplicate copy instead of the real app.
 #[cfg(target_os = "macos")]
 fn reopen_codex(state: &AppState, bundle: Option<&str>) -> Result<String, String> {
-    let mut cmds: Vec<Vec<String>> = Vec::new();
+    let mut forms: Vec<Vec<String>> = Vec::new();
     if let Some(path) = bundle {
-        cmds.push(vec!["open".to_string(), path.to_string()]);
+        forms.push(vec!["open".to_string(), path.to_string()]);
+        forms.push(vec!["open".to_string(), "-b".to_string(), CODEX_BUNDLE_ID.to_string()]);
+    } else {
+        forms.push(vec!["open".to_string(), "-b".to_string(), CODEX_BUNDLE_ID.to_string()]);
+        forms.push(vec!["open".to_string(), "-a".to_string(), "Codex".to_string()]);
     }
-    cmds.push(vec!["open".to_string(), "-b".to_string(), CODEX_BUNDLE_ID.to_string()]);
-    cmds.push(vec!["open".to_string(), "-a".to_string(), "Codex".to_string()]);
     let mut attempts: Vec<String> = Vec::new();
-    for round in 0..3 {
-        if round > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
+    for (i, form) in forms.iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(5));
         }
-        for cmd in &cmds {
-            let label = cmd.join(" ");
-            let out = Command::new(&cmd[0]).args(&cmd[1..]).output();
-            match out {
-                Err(e) => {
-                    let entry = format!("{label}: error {e}");
-                    append_log(state, &format!("Restart: reopen {entry}."));
-                    attempts.push(entry);
+        if codex_running(bundle) {
+            append_log(state, "Restart: Codex process already present; watching stability instead of opening again.");
+            return watch_stable(state, bundle);
+        }
+        let label = form.join(" ");
+        append_log(state, &format!("Restart: reopening ({label})."));
+        match Command::new(&form[0]).args(&form[1..]).output() {
+            Err(e) => {
+                let entry = format!("{label}: error {e}");
+                append_log(state, &format!("Restart: reopen {entry}."));
+                attempts.push(entry);
+            }
+            Ok(o) if !o.status.success() => {
+                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                let entry = if detail.is_empty() {
+                    format!("{label}: rc={}", o.status)
+                } else {
+                    format!("{label}: rc={} ({detail})", o.status)
+                };
+                append_log(state, &format!("Restart: reopen {entry}."));
+                attempts.push(entry);
+            }
+            Ok(_) => {
+                if grace_for_launch(bundle) {
+                    return watch_stable(state, bundle);
                 }
-                Ok(o) => {
-                    let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                    if !o.status.success() {
-                        let entry = if detail.is_empty() {
-                            format!("{label}: rc={}", o.status)
-                        } else {
-                            format!("{label}: rc={} ({detail})", o.status)
-                        };
-                        append_log(state, &format!("Restart: reopen {entry}."));
-                        attempts.push(entry);
-                        continue;
-                    }
-                    if wait_for_codex_back(bundle) {
-                        append_log(state, &format!("Restart: reopen verified ({label}); Codex is running again."));
-                        return Ok("Restarted the Codex app.".into());
-                    }
-                    let entry = format!("{label}: accepted but Codex did not reappear");
-                    append_log(state, &format!("Restart: reopen {entry}; retrying."));
-                    attempts.push(entry);
-                }
+                let entry = format!("{label}: accepted but Codex did not appear within 15s");
+                append_log(state, &format!("Restart: reopen {entry}."));
+                attempts.push(entry);
             }
         }
     }
     let msg = format!("Could not reopen Codex (attempts: {}).", attempts.join("; "));
     append_log(state, &format!("Restart: {msg}"));
     Err(msg)
+}
+
+/// Unified running check: bundle process poll when the path is known, name
+/// lookup otherwise.
+#[cfg(target_os = "macos")]
+fn codex_running(bundle: Option<&str>) -> bool {
+    match bundle {
+        Some(path) => bundle_still_running(path),
+        None => codex_name_running(),
+    }
+}
+
+/// Grace period after an accepted `open`. Cold starts take a while to appear
+/// in `ps`, and firing another `open` inside that window is what used to
+/// stack instances against each other.
+#[cfg(target_os = "macos")]
+fn grace_for_launch(bundle: Option<&str>) -> bool {
+    for _ in 0..30 {
+        if codex_running(bundle) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    false
+}
+
+/// Require the relaunched app to STAY up. A torn profile can crash the fresh
+/// instance within seconds; reporting success then strands the user with a
+/// dead app and no error to act on.
+#[cfg(target_os = "macos")]
+fn watch_stable(state: &AppState, bundle: Option<&str>) -> Result<String, String> {
+    for _ in 0..10 {
+        if !codex_running(bundle) {
+            let msg = "Codex started but did not stay running (profile may be torn); try opening it manually.".to_string();
+            append_log(state, &format!("Restart: {msg}"));
+            return Err(msg);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    append_log(state, "Restart: reopen verified; Codex is running again.");
+    Ok("Restarted the Codex app.".into())
 }
 
 #[tauri::command]
