@@ -1,5 +1,0 @@
-pyinstaller==6.4.0
-watchdog==4.0.0
-certifi
-customtkinter>=5.2,<6
-openai-codex; python_version >= "3.10"

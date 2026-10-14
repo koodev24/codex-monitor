@@ -87,7 +87,6 @@ apps/desktop/
   src-tauri/           # Rust backend (API client, storage, watcher, updater)
 scripts/
   set-version.mjs      # syncs version from release tags (CI)
-codex_monitor_app/     # legacy v1 Python implementation (reference only)
 ```
 
 ## Releasing

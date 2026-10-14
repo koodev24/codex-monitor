@@ -1,12 +1,7 @@
-# Python
-__pycache__/
-*.py[cod]
-
-# PyInstaller
+# PyInstaller output (kept out of git; no Python sources remain in repo)
 build/
 dist/
 *.spec
-!CodexMonitor.spec
 
 # Secrets — never commit credentials or signing material
 .env
