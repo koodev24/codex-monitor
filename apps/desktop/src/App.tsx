@@ -149,12 +149,14 @@ function IconBtn({
   onClick,
   busyKey,
   variant = "ghost",
+  pressed,
   children,
 }: {
   title: string;
   onClick: () => void;
   busyKey?: string;
   variant?: "ghost" | "outline" | "default" | "destructive" | "secondary";
+  pressed?: boolean;
   children: React.ReactNode;
 }) {
   const busy = useAppSelector((s) => (busyKey ? !!s.ui.busy[busyKey] : false));
@@ -163,12 +165,13 @@ function IconBtn({
       <TooltipTrigger
         render={
           <Button
-            variant={variant}
+            variant={pressed ? "secondary" : variant}
             size="icon-lg"
             className="min-h-9 min-w-9 shrink-0"
             onClick={onClick}
             disabled={busy}
             aria-label={busy ? `${title} (working…)` : title}
+            aria-pressed={pressed}
           >
             {busy ? <Spin /> : children}
           </Button>
@@ -206,6 +209,14 @@ export default function App() {
   const { dark, toggle } = useTheme();
   const panelsRef = useGroupRef();
   const [toolsShort, setToolsShort] = useState(false);
+  const [alwaysScrollToBottom, setAlwaysScrollToBottom] = useState(() => {
+    try {
+      return localStorage.getItem("cm-logs-auto-scroll") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const logsScrollHost = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
@@ -299,6 +310,19 @@ export default function App() {
       })
       .catch(() => undefined);
   }, [status, dispatch]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("cm-logs-auto-scroll", String(alwaysScrollToBottom));
+    } catch {
+      // Keep the toggle usable for this session when storage is unavailable.
+    }
+    if (!alwaysScrollToBottom) return;
+    const viewport = logsScrollHost.current?.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  }, [alwaysScrollToBottom, logs, toolsShort]);
 
   useEffect(() => {
     const t = window.setTimeout(() => void dispatch(checkUpdates(false)), 1500);
@@ -701,11 +725,29 @@ export default function App() {
                 </div>
               </div>
               {!toolsShort && (
-                <ScrollArea className="min-h-0 flex-1 rounded-md border bg-muted/30">
-                  <pre className="whitespace-pre-wrap p-2 text-xs text-muted-foreground">
-                    {logs.length === 0 ? "(no log entries yet)" : logs.join("\n")}
-                  </pre>
-                </ScrollArea>
+                <>
+                  <div className="flex min-h-9 shrink-0 items-center justify-between gap-2 border-t px-1">
+                    <span className="text-xs font-medium text-muted-foreground">Activity log</span>
+                    <IconBtn
+                      title={
+                        alwaysScrollToBottom
+                          ? "Disable always scroll to bottom"
+                          : "Always scroll to bottom"
+                      }
+                      pressed={alwaysScrollToBottom}
+                      onClick={() => setAlwaysScrollToBottom((enabled) => !enabled)}
+                    >
+                      <ArrowDownToLine />
+                    </IconBtn>
+                  </div>
+                  <div ref={logsScrollHost} className="min-h-0 flex-1">
+                    <ScrollArea className="h-full min-h-0 rounded-md border bg-muted/30">
+                      <pre className="whitespace-pre-wrap p-2 text-xs text-muted-foreground">
+                        {logs.length === 0 ? "(no log entries yet)" : logs.join("\n")}
+                      </pre>
+                    </ScrollArea>
+                  </div>
+                </>
               )}
             </div>
           </ResizablePanel>
