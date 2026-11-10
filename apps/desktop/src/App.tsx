@@ -122,15 +122,23 @@ import {
 
 function useTheme() {
   const [dark, setDark] = useState(() => {
-    const saved = localStorage.getItem("cm-theme");
-    if (saved) return saved === "dark";
+    try {
+      const saved = localStorage.getItem("cm-theme");
+      if (saved) return saved === "dark";
+    } catch {
+      // Use the system theme when webview storage is unavailable.
+    }
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
   });
   useEffect(() => {
     const root = document.documentElement;
     root.classList.add("disable-transitions");
     root.classList.toggle("dark", dark);
-    localStorage.setItem("cm-theme", dark ? "dark" : "light");
+    try {
+      localStorage.setItem("cm-theme", dark ? "dark" : "light");
+    } catch {
+      // Keep theme switching available for this session without storage.
+    }
     const frame = window.requestAnimationFrame(() => {
       void root.offsetHeight;
       root.classList.remove("disable-transitions");
