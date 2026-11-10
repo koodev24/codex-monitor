@@ -356,6 +356,15 @@ export default function App() {
     void dispatch(doImport(path));
   }
 
+  async function copyAccountEmail(email: string) {
+    try {
+      await navigator.clipboard.writeText(email);
+      dispatch(setStatus(`Copied ${email}.`));
+    } catch {
+      dispatch(setStatus("Could not copy the email."));
+    }
+  }
+
   function startLoginUi() {
     dispatch(resetLines());
     void dispatch(startLogin());
@@ -461,6 +470,9 @@ export default function App() {
                                 <span className="truncate font-medium" title={email}>
                                   {email}
                                 </span>
+                                <IconBtn title="Copy email" onClick={() => void copyAccountEmail(email)}>
+                                  <Copy />
+                                </IconBtn>
                                 {isCurrent && <Badge variant="outline">current</Badge>}
                                 {a.archived && <Badge variant="secondary">arch</Badge>}
                               </span>
