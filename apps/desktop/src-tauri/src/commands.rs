@@ -862,6 +862,7 @@ pub fn open_login_url(url: String) -> Result<String, String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RestartPlan {
     exit_poll_attempts: usize,
@@ -875,6 +876,7 @@ struct RestartPlan {
 
 /// The v2.3.0/v2.3.1 Tauri restart timings that predate the later
 /// bundle-discovery and multi-stage reopen changes.
+#[cfg(target_os = "macos")]
 fn legacy_restart_plan() -> RestartPlan {
     RestartPlan {
         exit_poll_attempts: 40,
@@ -1091,6 +1093,7 @@ mod real_store_tests {
         assert!(text.contains("accounts"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn legacy_restart_plan_matches_known_good_tauri_flow() {
         let plan = legacy_restart_plan();
