@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.4.1 - 2026-11-10
+
+### Fixed
+
+- Keep the spinner visually centered with a stationary ring behind its rotating arc.
+- Restore icon buttons to their original 32px size.
+- Move the log auto-scroll toggle into the existing log controls row.
+
 ## v2.4.0 - 2026-11-10
 
 ### Added
