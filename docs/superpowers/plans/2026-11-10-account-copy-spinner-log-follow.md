@@ -63,5 +63,7 @@
 
 - [x] Add v2.4.0 notes for email copy, stable icon sizing, and optional log follow.
 - [x] Review staged diff and `git diff --check`; commit focused changes.
-- [ ] Create and push annotated tag `v2.4.0` to `https://github.com/koodev24/codex-monitor.git`.
-- [ ] Monitor the existing release workflow; verify platform assets, `latest.json`, and published release.
+- [x] Create and push annotated tag `v2.4.0` to `https://github.com/koodev24/codex-monitor.git`.
+- [x] Monitor the existing release workflow; verify platform assets, `latest.json`, and published release.
+
+Release evidence: workflow run `42832643713` passed on macOS, Windows, Ubuntu, and compatibility ZIP. Published `latest.json` reports version `2.4.0`.
