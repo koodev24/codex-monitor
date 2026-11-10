@@ -141,7 +141,7 @@ function useTheme() {
 }
 
 function Spin({ className }: { className?: string }) {
-  return <Loader2 className={`animate-spin ${className ?? ""}`} />;
+  return <Loader2 className={`size-4 shrink-0 animate-spin ${className ?? ""}`} />;
 }
 
 function IconBtn({
@@ -164,7 +164,8 @@ function IconBtn({
         render={
           <Button
             variant={variant}
-            size="icon"
+            size="icon-lg"
+            className="min-h-9 min-w-9 shrink-0"
             onClick={onClick}
             disabled={busy}
             aria-label={busy ? `${title} (working…)` : title}
