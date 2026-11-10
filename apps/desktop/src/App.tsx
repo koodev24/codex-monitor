@@ -16,7 +16,6 @@ import {
   Eraser,
   Eye,
   EyeOff,
-  Loader2,
   Moon,
   RefreshCw,
   Sun,
@@ -148,8 +147,13 @@ function useTheme() {
   return { dark, toggle: () => setDark((d) => !d) };
 }
 
-function Spin({ className }: { className?: string }) {
-  return <Loader2 className={`size-4 shrink-0 animate-spin ${className ?? ""}`} />;
+function Spin() {
+  return (
+    <span className="relative inline-flex size-4 shrink-0" aria-hidden="true">
+      <span className="absolute inset-0 rounded-full border-2 border-current/25" />
+      <span className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-current" />
+    </span>
+  );
 }
 
 function IconBtn({
@@ -174,8 +178,7 @@ function IconBtn({
         render={
           <Button
             variant={pressed ? "secondary" : variant}
-            size="icon-lg"
-            className="min-h-9 min-w-9 shrink-0"
+            size="icon"
             onClick={onClick}
             disabled={busy}
             aria-label={busy ? `${title} (working…)` : title}
@@ -662,6 +665,17 @@ export default function App() {
                 >
                   <Eraser />
                 </IconBtn>
+                <IconBtn
+                  title={
+                    alwaysScrollToBottom
+                      ? "Disable always scroll to bottom"
+                      : "Always scroll to bottom"
+                  }
+                  pressed={alwaysScrollToBottom}
+                  onClick={() => setAlwaysScrollToBottom((enabled) => !enabled)}
+                >
+                  <ArrowDownToLine />
+                </IconBtn>
                 <IconBtn title="Export data" busyKey="data:export" onClick={() => void pickExportFile()}>
                   <Download />
                 </IconBtn>
@@ -734,20 +748,6 @@ export default function App() {
               </div>
               {!toolsShort && (
                 <>
-                  <div className="flex min-h-9 shrink-0 items-center justify-between gap-2 border-t px-1">
-                    <span className="text-xs font-medium text-muted-foreground">Activity log</span>
-                    <IconBtn
-                      title={
-                        alwaysScrollToBottom
-                          ? "Disable always scroll to bottom"
-                          : "Always scroll to bottom"
-                      }
-                      pressed={alwaysScrollToBottom}
-                      onClick={() => setAlwaysScrollToBottom((enabled) => !enabled)}
-                    >
-                      <ArrowDownToLine />
-                    </IconBtn>
-                  </div>
                   <div ref={logsScrollHost} className="min-h-0 flex-1">
                     <ScrollArea className="h-full min-h-0 rounded-md border bg-muted/30">
                       <pre className="whitespace-pre-wrap p-2 text-xs text-muted-foreground">
