@@ -862,264 +862,118 @@ pub fn open_login_url(url: String) -> Result<String, String> {
     }
 }
 
-/// Bundle identifier of the Codex desktop app. Display names drift
-/// ("Codex" vs "ChatGPT") but the bundle id is stable, so discovery keys
-/// off it instead of a hardcoded app name.
-#[cfg(target_os = "macos")]
-const CODEX_BUNDLE_ID: &str = "com.openai.codex";
-
-/// Resolve the app bundle path, rename-proof: Spotlight by bundle id
-/// first (no permissions needed), LaunchServices lookup second.
-#[cfg(target_os = "macos")]
-fn codex_bundle_path() -> Option<String> {
-    if let Ok(out) = Command::new("mdfind")
-        .arg(format!(
-            "kMDItemCFBundleIdentifier == '{}'",
-            CODEX_BUNDLE_ID
-        ))
-        .output()
-    {
-        if out.status.success() {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                let path = line.trim().to_string();
-                if path.ends_with(".app") && std::path::Path::new(&path).exists() {
-                    return Some(path);
-                }
-            }
-        }
-    }
-    let out = Command::new("osascript")
-        .args([
-            "-e",
-            &format!(
-                "POSIX path of (path to application id \"{}\")",
-                CODEX_BUNDLE_ID
-            ),
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if path.is_empty() {
-        return None;
-    }
-    Some(path)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RestartPlan {
+    exit_poll_attempts: usize,
+    exit_poll_interval: std::time::Duration,
+    settle: std::time::Duration,
+    reopen_attempts: usize,
+    reopen_retry_delay: std::time::Duration,
+    reopen_program: &'static str,
+    reopen_args: &'static [&'static str],
 }
 
-/// True while any process still runs from inside the given bundle.
-/// Plain substring match on full command lines (no regex, no name
-/// guessing); helpers count too, so we wait out the whole teardown,
-/// state flush and file locks included. Unknown output keeps waiting
-/// rather than risking an early reopen.
-#[cfg(target_os = "macos")]
-fn bundle_still_running(bundle_path: &str) -> bool {
-    let out = match Command::new("ps").args(["-ax", "-o", "command="]).output() {
-        Ok(o) if o.status.success() => o,
-        _ => return true,
-    };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout.lines().any(|line| line.contains(bundle_path))
+/// The v2.3.0/v2.3.1 Tauri restart timings that predate the later
+/// bundle-discovery and multi-stage reopen changes.
+fn legacy_restart_plan() -> RestartPlan {
+    RestartPlan {
+        exit_poll_attempts: 40,
+        exit_poll_interval: std::time::Duration::from_millis(250),
+        settle: std::time::Duration::from_millis(500),
+        reopen_attempts: 2,
+        reopen_retry_delay: std::time::Duration::from_millis(1_500),
+        reopen_program: "open",
+        reopen_args: &["-a", "Codex"],
+    }
 }
 
-/// Ask Codex to quit gracefully. Bundle-id form first (rename-proof),
-/// display-name form as fallback. A failing quit is non-fatal: the app
-/// may already be closed.
+/// Ask Codex to quit by its stable display name. A failed request is
+/// non-fatal: Codex may already be closed, and the exit poll below decides
+/// whether it is safe to reopen.
 #[cfg(target_os = "macos")]
 fn quit_codex(state: &AppState) {
-    let scripts = [
-        format!("tell application id \"{CODEX_BUNDLE_ID}\" to quit"),
-        "tell application \"Codex\" to quit".to_string(),
-    ];
-    for script in &scripts {
-        match Command::new("osascript").args(["-e", script]).output() {
-            Err(e) => {
-                append_log(state, &format!("Restart: quit via '{script}' could not run: {e}."));
-            }
-            Ok(o) => {
-                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                if o.status.success() {
-                    append_log(state, &format!("Restart: quit requested ({script})."));
-                    return;
-                }
-                if detail.is_empty() {
-                    append_log(state, &format!("Restart: quit via '{script}' returned {0}; trying next form.", o.status));
-                } else {
-                    append_log(state, &format!("Restart: quit via '{script}' noted ({detail}); trying next form."));
-                }
+    let script = "tell application \"Codex\" to quit";
+    match Command::new("osascript").args(["-e", script]).output() {
+        Err(e) => append_log(state, &format!("Restart: quit request could not run: {e}.")),
+        Ok(output) if output.status.success() => {
+            append_log(state, "Restart: asked Codex to quit.");
+        }
+        Ok(output) => {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if detail.is_empty() {
+                append_log(state, &format!("Restart: quit request returned {}; continuing.", output.status));
+            } else {
+                append_log(state, &format!("Restart: quit request noted ({detail}); continuing."));
             }
         }
     }
-    append_log(state, "Restart: quit requests done; continuing (app may already be closed).");
 }
 
-/// True when the auth file parses and carries an access token. Reads the
-/// file directly (no state lock) so the check stays cheap and lock-free.
 #[cfg(target_os = "macos")]
-fn auth_file_has_token(auth_path: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(auth_path) else { return false };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
-    v.get("tokens")
-        .and_then(|t| t.get("access_token"))
-        .and_then(|t| t.as_str())
-        .map(|s| !s.is_empty())
-        .unwrap_or(false)
-}
-
-/// Refuse to restart into a torn credential file. Real logs show quit
-/// landing in the same second as an auth refresh; quitting the app while it
-/// is mid-rotation leaves a half-written auth.json that the relaunched app
-/// loads as an incomplete profile. Healthy files pass on the first read.
-#[cfg(target_os = "macos")]
-fn wait_for_auth_settle(state: &AppState, auth_path: &Path) -> bool {
-    if auth_file_has_token(auth_path) {
-        return true;
-    }
-    append_log(state, "Restart: auth file mid-change; waiting up to 5s for it to settle.");
-    for _ in 0..20 {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        if auth_file_has_token(auth_path) {
-            append_log(state, "Restart: auth file settled.");
-            return true;
-        }
-    }
-    append_log(state, "Restart: auth file still has no usable token; aborting restart to avoid launching into a torn profile.");
-    false
-}
-
-/// Name-based fallback for "is Codex running", used only when the bundle
-/// path could not be resolved.
-#[cfg(target_os = "macos")]
-fn codex_name_running() -> bool {
-    match Command::new("osascript")
-        .args(["-e", "application \"Codex\" is running"])
+fn codex_running() -> bool {
+    Command::new("pgrep")
+        .args(["-x", "Codex"])
         .output()
-    {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().eq_ignore_ascii_case("true")
-        }
-        _ => false,
-    }
+        .map(|output| output.status.success())
+        .unwrap_or(true)
 }
 
-/// Wait up to ~20s for full teardown (helpers and file locks included).
-/// Slow quits are exactly what used to strand users with a killed-but-
-/// never-reopened app, so patience here is the fix, not the wait itself.
+/// Wait up to the historical 10-second window for Codex to leave before
+/// asking LaunchServices to open it again.
 #[cfg(target_os = "macos")]
-fn wait_for_codex_exit(state: &AppState, bundle: Option<&str>) -> bool {
-    for _ in 0..80 {
-        let gone = match bundle {
-            Some(path) => !bundle_still_running(path),
-            None => !codex_name_running(),
-        };
-        if gone {
+fn wait_for_codex_exit(state: &AppState) -> bool {
+    let plan = legacy_restart_plan();
+    for _ in 0..plan.exit_poll_attempts {
+        if !codex_running() {
             return true;
         }
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        std::thread::sleep(plan.exit_poll_interval);
     }
-    append_log(state, "Restart: timed out waiting for Codex to exit; skipped reopen to avoid relaunching a half-closed app.");
+    append_log(state, "Restart: Codex is still closing after 10s; skipped reopen.");
     false
 }
 
-/// One launch in flight at most. Firing another `open` while a first launch
-/// is still invisible stacks concurrent instances that contend for the Codex
-/// profile and come back torn (usage data gone), so every attempt first
-/// checks no bundle process exists, `open` forms advance only on immediate
-/// rejection, and an accepted `open` gets a long grace period before anything
-/// else is attempted. The name form is a last resort for unresolved bundles
-/// only: it can match a stale duplicate copy instead of the real app.
+/// Reopen Codex through the same two-attempt `open -a` sequence used by the
+/// last known-good Tauri versions. LaunchServices success is intentionally
+/// treated as success; the old flow did not add another cold-start grace
+/// period that could strand the user behind a long delay.
 #[cfg(target_os = "macos")]
-fn reopen_codex(state: &AppState, bundle: Option<&str>) -> Result<String, String> {
-    let mut forms: Vec<Vec<String>> = Vec::new();
-    if let Some(path) = bundle {
-        forms.push(vec!["open".to_string(), path.to_string()]);
-        forms.push(vec!["open".to_string(), "-b".to_string(), CODEX_BUNDLE_ID.to_string()]);
-    } else {
-        forms.push(vec!["open".to_string(), "-b".to_string(), CODEX_BUNDLE_ID.to_string()]);
-        forms.push(vec!["open".to_string(), "-a".to_string(), "Codex".to_string()]);
-    }
-    let mut attempts: Vec<String> = Vec::new();
-    for (i, form) in forms.iter().enumerate() {
-        if i > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(5));
+fn reopen_codex(state: &AppState) -> Result<String, String> {
+    let plan = legacy_restart_plan();
+    for attempt in 0..plan.reopen_attempts {
+        if attempt > 0 {
+            std::thread::sleep(plan.reopen_retry_delay);
         }
-        if codex_running(bundle) {
-            append_log(state, "Restart: Codex process already present; watching stability instead of opening again.");
-            return watch_stable(state, bundle);
-        }
-        let label = form.join(" ");
-        append_log(state, &format!("Restart: reopening ({label})."));
-        match Command::new(&form[0]).args(&form[1..]).output() {
-            Err(e) => {
-                let entry = format!("{label}: error {e}");
-                append_log(state, &format!("Restart: reopen {entry}."));
-                attempts.push(entry);
+        append_log(state, &format!("Restart: reopening (open -a Codex, attempt {}).", attempt + 1));
+        match Command::new(plan.reopen_program).args(plan.reopen_args).output() {
+            Ok(output) if output.status.success() => {
+                append_log(state, "Restart: reopen request accepted.");
+                return Ok("Restarted the Codex app.".into());
             }
-            Ok(o) if !o.status.success() => {
-                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                let entry = if detail.is_empty() {
-                    format!("{label}: rc={}", o.status)
-                } else {
-                    format!("{label}: rc={} ({detail})", o.status)
-                };
-                append_log(state, &format!("Restart: reopen {entry}."));
-                attempts.push(entry);
-            }
-            Ok(_) => {
-                if grace_for_launch(bundle) {
-                    return watch_stable(state, bundle);
+            Ok(output) => {
+                let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                if attempt + 1 == plan.reopen_attempts {
+                    let msg = if detail.is_empty() {
+                        "Could not reopen Codex.".to_string()
+                    } else {
+                        format!("Could not reopen Codex: {detail}")
+                    };
+                    append_log(state, &format!("Restart: {msg}"));
+                    return Err(msg);
                 }
-                let entry = format!("{label}: accepted but Codex did not appear within 15s");
-                append_log(state, &format!("Restart: reopen {entry}."));
-                attempts.push(entry);
+                append_log(state, &format!("Restart: reopen attempt {} failed; retrying.", attempt + 1));
+            }
+            Err(error) => {
+                if attempt + 1 == plan.reopen_attempts {
+                    let msg = format!("Could not reopen Codex: {error}");
+                    append_log(state, &format!("Restart: {msg}"));
+                    return Err(msg);
+                }
+                append_log(state, &format!("Restart: reopen attempt {} could not run; retrying.", attempt + 1));
             }
         }
     }
-    let msg = format!("Could not reopen Codex (attempts: {}).", attempts.join("; "));
-    append_log(state, &format!("Restart: {msg}"));
-    Err(msg)
-}
-
-/// Unified running check: bundle process poll when the path is known, name
-/// lookup otherwise.
-#[cfg(target_os = "macos")]
-fn codex_running(bundle: Option<&str>) -> bool {
-    match bundle {
-        Some(path) => bundle_still_running(path),
-        None => codex_name_running(),
-    }
-}
-
-/// Grace period after an accepted `open`. Cold starts take a while to appear
-/// in `ps`, and firing another `open` inside that window is what used to
-/// stack instances against each other.
-#[cfg(target_os = "macos")]
-fn grace_for_launch(bundle: Option<&str>) -> bool {
-    for _ in 0..30 {
-        if codex_running(bundle) {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    false
-}
-
-/// Require the relaunched app to STAY up. A torn profile can crash the fresh
-/// instance within seconds; reporting success then strands the user with a
-/// dead app and no error to act on.
-#[cfg(target_os = "macos")]
-fn watch_stable(state: &AppState, bundle: Option<&str>) -> Result<String, String> {
-    for _ in 0..10 {
-        if !codex_running(bundle) {
-            let msg = "Codex started but did not stay running (profile may be torn); try opening it manually.".to_string();
-            append_log(state, &format!("Restart: {msg}"));
-            return Err(msg);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    append_log(state, "Restart: reopen verified; Codex is running again.");
-    Ok("Restarted the Codex app.".into())
+    Err("Could not reopen Codex.".into())
 }
 
 #[tauri::command]
@@ -1127,27 +981,14 @@ pub fn restart_codex(state: State<AppState>) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         append_log(&state, "Restart requested for Codex app.");
-        let bundle = codex_bundle_path();
-        match &bundle {
-            Some(path) => append_log(&state, &format!("Restart: resolved Codex bundle at {path}.")),
-            None => append_log(&state, "Restart: could not resolve Codex bundle path; will use id/name lookup."),
-        }
-        let auth_path = state_lock(&state).auth.auth_file_path.clone();
-        if !auth_path.is_file() {
-            append_log(&state, "Restart: no auth file yet; restarting anyway (fresh install).");
-        } else if !wait_for_auth_settle(&state, &auth_path) {
-            return Err("Codex auth file is changing right now; try the restart again in a few seconds.".into());
-        }
         quit_codex(&state);
-        if !wait_for_codex_exit(&state, bundle.as_deref()) {
+        if !wait_for_codex_exit(&state) {
             return Err("Codex is still closing (close it manually, then reopen it).".into());
         }
-        // Settle so file locks flush and LaunchServices releases the old
-        // instance; reopening into a half-torn-down app is what used to
-        // come back with a broken profile sheet.
-        append_log(&state, "Restart: Codex exited; settling 2s before reopen.");
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        reopen_codex(&state, bundle.as_deref())
+        let plan = legacy_restart_plan();
+        append_log(&state, "Restart: Codex exited; settling 500ms before reopen.");
+        std::thread::sleep(plan.settle);
+        reopen_codex(&state)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1251,20 +1092,15 @@ mod real_store_tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
-    fn auth_token_check_accepts_only_usable_files() {
-        let dir = std::env::temp_dir().join(format!("codex-restart-guard-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("auth.json");
-        assert!(!auth_file_has_token(&path));
-        fs::write(&path, "{ torn json").unwrap();
-        assert!(!auth_file_has_token(&path));
-        fs::write(&path, r#"{"tokens": {}}"#).unwrap();
-        assert!(!auth_file_has_token(&path));
-        fs::write(&path, r#"{"tokens": {"access_token": "live"}}"#).unwrap();
-        assert!(auth_file_has_token(&path));
-        let _ = fs::remove_dir_all(&dir);
+    fn legacy_restart_plan_matches_known_good_tauri_flow() {
+        let plan = legacy_restart_plan();
+        assert_eq!(plan.exit_poll_attempts, 40);
+        assert_eq!(plan.exit_poll_interval.as_millis(), 250);
+        assert_eq!(plan.settle.as_millis(), 500);
+        assert_eq!(plan.reopen_attempts, 2);
+        assert_eq!(plan.reopen_retry_delay.as_millis(), 1_500);
+        assert_eq!(plan.reopen_program, "open");
+        assert_eq!(plan.reopen_args, &["-a", "Codex"]);
     }
 
     #[test]
