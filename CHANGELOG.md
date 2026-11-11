@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.4.2 - 2026-11-11
+
+### Fixed
+
+- Restart Codex after account switching even when its app or executable is renamed.
+- Stop remaining desktop helpers before reopening, with a bounded force-stop fallback for stuck processes.
+- Verify that the new main process stays running instead of treating a launch request as success.
+- Keep the monitor responsive during restart and reject overlapping restart requests.
+
 ## v2.4.1 - 2026-11-10
 
 ### Fixed

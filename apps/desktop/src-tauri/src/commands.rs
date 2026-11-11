@@ -862,139 +862,28 @@ pub fn open_login_url(url: String) -> Result<String, String> {
     }
 }
 
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RestartPlan {
-    exit_poll_attempts: usize,
-    exit_poll_interval: std::time::Duration,
-    settle: std::time::Duration,
-    reopen_attempts: usize,
-    reopen_retry_delay: std::time::Duration,
-    reopen_program: &'static str,
-    reopen_args: &'static [&'static str],
-}
-
-/// The v2.3.0/v2.3.1 Tauri restart timings that predate the later
-/// bundle-discovery and multi-stage reopen changes.
-#[cfg(target_os = "macos")]
-fn legacy_restart_plan() -> RestartPlan {
-    RestartPlan {
-        exit_poll_attempts: 40,
-        exit_poll_interval: std::time::Duration::from_millis(250),
-        settle: std::time::Duration::from_millis(500),
-        reopen_attempts: 2,
-        reopen_retry_delay: std::time::Duration::from_millis(1_500),
-        reopen_program: "open",
-        reopen_args: &["-a", "Codex"],
-    }
-}
-
-/// Ask Codex to quit by its stable display name. A failed request is
-/// non-fatal: Codex may already be closed, and the exit poll below decides
-/// whether it is safe to reopen.
-#[cfg(target_os = "macos")]
-fn quit_codex(state: &AppState) {
-    let script = "tell application \"Codex\" to quit";
-    match Command::new("osascript").args(["-e", script]).output() {
-        Err(e) => append_log(state, &format!("Restart: quit request could not run: {e}.")),
-        Ok(output) if output.status.success() => {
-            append_log(state, "Restart: asked Codex to quit.");
-        }
-        Ok(output) => {
-            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if detail.is_empty() {
-                append_log(state, &format!("Restart: quit request returned {}; continuing.", output.status));
-            } else {
-                append_log(state, &format!("Restart: quit request noted ({detail}); continuing."));
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn codex_running() -> bool {
-    Command::new("pgrep")
-        .args(["-x", "Codex"])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(true)
-}
-
-/// Wait up to the historical 10-second window for Codex to leave before
-/// asking LaunchServices to open it again.
-#[cfg(target_os = "macos")]
-fn wait_for_codex_exit(state: &AppState) -> bool {
-    let plan = legacy_restart_plan();
-    for _ in 0..plan.exit_poll_attempts {
-        if !codex_running() {
-            return true;
-        }
-        std::thread::sleep(plan.exit_poll_interval);
-    }
-    append_log(state, "Restart: Codex is still closing after 10s; skipped reopen.");
-    false
-}
-
-/// Reopen Codex through the same two-attempt `open -a` sequence used by the
-/// last known-good Tauri versions. LaunchServices success is intentionally
-/// treated as success; the old flow did not add another cold-start grace
-/// period that could strand the user behind a long delay.
-#[cfg(target_os = "macos")]
-fn reopen_codex(state: &AppState) -> Result<String, String> {
-    let plan = legacy_restart_plan();
-    for attempt in 0..plan.reopen_attempts {
-        if attempt > 0 {
-            std::thread::sleep(plan.reopen_retry_delay);
-        }
-        append_log(state, &format!("Restart: reopening (open -a Codex, attempt {}).", attempt + 1));
-        match Command::new(plan.reopen_program).args(plan.reopen_args).output() {
-            Ok(output) if output.status.success() => {
-                append_log(state, "Restart: reopen request accepted.");
-                return Ok("Restarted the Codex app.".into());
-            }
-            Ok(output) => {
-                let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                if attempt + 1 == plan.reopen_attempts {
-                    let msg = if detail.is_empty() {
-                        "Could not reopen Codex.".to_string()
-                    } else {
-                        format!("Could not reopen Codex: {detail}")
-                    };
-                    append_log(state, &format!("Restart: {msg}"));
-                    return Err(msg);
-                }
-                append_log(state, &format!("Restart: reopen attempt {} failed; retrying.", attempt + 1));
-            }
-            Err(error) => {
-                if attempt + 1 == plan.reopen_attempts {
-                    let msg = format!("Could not reopen Codex: {error}");
-                    append_log(state, &format!("Restart: {msg}"));
-                    return Err(msg);
-                }
-                append_log(state, &format!("Restart: reopen attempt {} could not run; retrying.", attempt + 1));
-            }
-        }
-    }
-    Err("Could not reopen Codex.".into())
-}
-
 #[tauri::command]
-pub fn restart_codex(state: State<AppState>) -> Result<String, String> {
+pub async fn restart_codex(app: AppHandle) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
-        append_log(&state, "Restart requested for Codex app.");
-        quit_codex(&state);
-        if !wait_for_codex_exit(&state) {
-            return Err("Codex is still closing (close it manually, then reopen it).".into());
-        }
-        let plan = legacy_restart_plan();
-        append_log(&state, "Restart: Codex exited; settling 500ms before reopen.");
-        std::thread::sleep(plan.settle);
-        reopen_codex(&state)
+        // Lifecycle polling must not block Tauri's UI/event thread.
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<AppState>();
+            append_log(&state, "Restart requested for Codex app.");
+            match crate::restart::run(|message| append_log(&state, message)) {
+                Ok(()) => Ok("Restarted the Codex app.".into()),
+                Err(error) => {
+                    append_log(&state, &format!("Restart failed: {error}"));
+                    Err(error)
+                }
+            }
+        })
+        .await
+        .map_err(|error| format!("Restart worker failed: {error}"))?
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = &state;
+        let _ = app;
         Err("Restarting the Codex app is only supported on macOS.".into())
     }
 }
@@ -1091,19 +980,6 @@ mod real_store_tests {
         };
         let text = serde_json::to_string(&snap).expect("snapshot must serialize");
         assert!(text.contains("accounts"));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn legacy_restart_plan_matches_known_good_tauri_flow() {
-        let plan = legacy_restart_plan();
-        assert_eq!(plan.exit_poll_attempts, 40);
-        assert_eq!(plan.exit_poll_interval.as_millis(), 250);
-        assert_eq!(plan.settle.as_millis(), 500);
-        assert_eq!(plan.reopen_attempts, 2);
-        assert_eq!(plan.reopen_retry_delay.as_millis(), 1_500);
-        assert_eq!(plan.reopen_program, "open");
-        assert_eq!(plan.reopen_args, &["-a", "Codex"]);
     }
 
     #[test]

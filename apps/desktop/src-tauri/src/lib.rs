@@ -4,6 +4,8 @@ use tauri::Manager;
 pub mod api;
 pub mod auth;
 pub mod commands;
+#[cfg(any(target_os = "macos", test))]
+mod restart;
 pub mod oauth_login;
 pub mod formatters;
 #[cfg(feature = "legacy-migrate")]
