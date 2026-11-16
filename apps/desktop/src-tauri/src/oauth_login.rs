@@ -288,7 +288,10 @@ mod tests {
         assert!(wrapped.contains("codex_streamlined_login=true"));
         let parsed = url::Url::parse(&wrapped).unwrap();
         let params: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
-        assert_eq!(params.get("authorize_url").map(String::as_str), Some(inner.as_str()));
+        assert_eq!(
+            params.get("authorize_url").map(String::as_str),
+            Some(inner.as_str())
+        );
     }
 
     #[test]

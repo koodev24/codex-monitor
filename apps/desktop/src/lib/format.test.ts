@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   countdownText,
+  formatAgo,
+  formatResetCountdown,
   formatCreditExpires,
   formatGrantedAt,
   formatQuotaLeft,
   formatResetDisplay,
+  formatResetStamp,
   formatTimeRemaining,
   hasShortWindow,
   parseIso,
@@ -26,11 +29,23 @@ describe("formatQuotaLeft", () => {
     expect(formatQuotaLeft(25)).toBe("75%");
     expect(formatQuotaLeft(99.6)).toBe("0%");
     expect(formatQuotaLeft(0)).toBe("100%");
+    expect(formatQuotaLeft(150)).toBe("0%");
   });
 
   it("renders a dash when the value is missing", () => {
     expect(formatQuotaLeft(undefined)).toBe("-");
     expect(formatQuotaLeft(Number.NaN)).toBe("-");
+  });
+});
+
+describe("relative fetch age", () => {
+  it("renders a compact age and never a bare clock", () => {
+    const now = 1700000000;
+    expect(formatAgo(now - 10, now)).toBe("Just now");
+    expect(formatAgo(now - 5 * 60, now)).toBe("5m ago");
+    expect(formatAgo(now - 3 * 3600, now)).toBe("3h ago");
+    expect(formatAgo(now - 2 * 86400, now)).toBe("2d ago");
+    expect(formatAgo(undefined, now)).toBe("Never");
   });
 });
 
@@ -97,6 +112,40 @@ describe("reset display", () => {
     expect(countdownText(0)).toBe("expired");
     expect(countdownText(-5)).toBe("expired");
     expect(countdownText(90000)).toContain("1d");
+  });
+
+  it("never renders a duration as a zero-padded clock", () => {
+    const now = 1700000000;
+    expect(formatResetCountdown(now + 59 * 60, now)).toBe("59m");
+    expect(formatResetCountdown(now + 3600, now)).toBe("1h 0m");
+    expect(formatResetCountdown(now + 3 * 86400 + 9 * 3600 + 7 * 60, now)).toBe(
+      "3d 9h 7m",
+    );
+  });
+});
+
+describe("human reset stamp", () => {
+  const at = (y: number, m: number, d: number, h = 0, min = 0) =>
+    new Date(y, m, d, h, min).getTime() / 1000;
+
+  it("uses a clock time for a reset later the same day", () => {
+    expect(formatResetStamp(at(2026, 10, 18, 18, 26), at(2026, 10, 18, 9, 0))).toBe(
+      "6:26 PM",
+    );
+    expect(formatResetStamp(at(2026, 10, 18, 0, 5), at(2026, 10, 18, 0, 0))).toBe(
+      "12:05 AM",
+    );
+  });
+
+  it("uses a short date on other days, with the year only when it differs", () => {
+    expect(formatResetStamp(at(2026, 10, 18, 6, 0), at(2026, 10, 17, 9, 0))).toBe("18 Nov");
+    expect(formatResetStamp(at(2025, 11, 2, 6, 0), at(2026, 10, 18, 9, 0))).toBe(
+      "2 Dec 2025",
+    );
+  });
+
+  it("renders a dash without a timestamp", () => {
+    expect(formatResetStamp(undefined, 1700000000)).toBe("-");
   });
 });
 

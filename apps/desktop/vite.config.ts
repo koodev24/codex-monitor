@@ -16,6 +16,15 @@ export default defineConfig(() => ({
     },
   },
 
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(process.cwd(), "index.html"),
+        tray: path.resolve(process.cwd(), "tray.html"),
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

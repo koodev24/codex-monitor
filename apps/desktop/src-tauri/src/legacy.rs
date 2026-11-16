@@ -21,12 +21,14 @@ use serde_json::{Map, Value};
 
 use crate::models::UsageMap;
 use crate::storage::{
-    AUTO_FETCH_OPTIONS, Meta, UsageStorage, looks_like_account_payload, sanitize_account,
-    sanitize_auto_fetch, sanitize_meta,
+    looks_like_account_payload, sanitize_account, sanitize_auto_fetch, sanitize_meta, Meta,
+    UsageStorage, AUTO_FETCH_OPTIONS,
 };
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty())
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
 }
 
 /// Legacy store files, newest location first. Mirrors LOCAL_STORAGE_FILE +
@@ -71,8 +73,14 @@ fn merge_legacy_raw(existing: &Value, new: &Value) -> Value {
         Some(m) => m,
         None => return existing.clone(),
     };
-    let old_ts = merged.get("last_fetched").and_then(Value::as_f64).unwrap_or(0.0);
-    let new_ts = new_map.get("last_fetched").and_then(Value::as_f64).unwrap_or(0.0);
+    let old_ts = merged
+        .get("last_fetched")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let new_ts = new_map
+        .get("last_fetched")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
     if new_ts >= old_ts {
         for f in [
             "reset_ts",
@@ -88,7 +96,8 @@ fn merge_legacy_raw(existing: &Value, new: &Value) -> Value {
             }
         }
     }
-    let keep_new_auto = matches!(new_map.get("auto_fetch"), Some(Value::String(s)) if !s.is_empty() && s != "None");
+    let keep_new_auto =
+        matches!(new_map.get("auto_fetch"), Some(Value::String(s)) if !s.is_empty() && s != "None");
     if keep_new_auto {
         merged.insert("auto_fetch".into(), new_map["auto_fetch"].clone());
     }
@@ -101,7 +110,9 @@ fn merge_legacy_raw(existing: &Value, new: &Value) -> Value {
 }
 
 fn read_json(path: &PathBuf) -> Option<Value> {
-    fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok())
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
 }
 
 /// Mirrors _select_migrated_auto_fetch (legacy inference, stays here).
@@ -111,8 +122,11 @@ fn select_migrated_auto_fetch(meta: &Meta, legacy: &HashMap<String, String>) -> 
             return v.clone();
         }
     }
-    let distinct: HashSet<&str> =
-        legacy.values().map(String::as_str).filter(|v| *v != "None").collect();
+    let distinct: HashSet<&str> = legacy
+        .values()
+        .map(String::as_str)
+        .filter(|v| *v != "None")
+        .collect();
     if distinct.len() == 1 {
         return distinct.into_iter().next().unwrap().to_string();
     }
@@ -129,50 +143,55 @@ fn parse_legacy_store(root: &Value) -> Option<(UsageMap, Meta)> {
     let mut legacy_auto: HashMap<String, String> = HashMap::new();
     let mut meta = Meta::new();
 
-    let raw_accounts: Map<String, Value> = if let Some(Value::Object(accounts)) =
-        raw.get("accounts")
-    {
-        let mut merged = accounts.clone();
-        if let Some(Value::Object(old_meta)) = raw.get("__meta__") {
-            for (k, v) in sanitize_meta(old_meta) {
-                meta.insert(k, v);
+    let raw_accounts: Map<String, Value> =
+        if let Some(Value::Object(accounts)) = raw.get("accounts") {
+            let mut merged = accounts.clone();
+            if let Some(Value::Object(old_meta)) = raw.get("__meta__") {
+                for (k, v) in sanitize_meta(old_meta) {
+                    meta.insert(k, v);
+                }
             }
-        }
-        for (key, value) in raw {
-            if key == "accounts" || key == "__meta__" {
-                continue;
+            for (key, value) in raw {
+                if key == "accounts" || key == "__meta__" {
+                    continue;
+                }
+                if looks_like_account_payload(value) {
+                    let next = match merged.get(key) {
+                        Some(existing) => merge_legacy_raw(existing, value),
+                        None => value.clone(),
+                    };
+                    merged.insert(key.clone(), next);
+                }
             }
-            if looks_like_account_payload(value) {
-                let next = match merged.get(key) {
-                    Some(existing) => merge_legacy_raw(existing, value),
-                    None => value.clone(),
-                };
-                merged.insert(key.clone(), next);
-            }
-        }
-        merged
-    } else {
-        raw.clone()
-    };
+            merged
+        } else {
+            raw.clone()
+        };
 
     for (email, value) in &raw_accounts {
         if email == "accounts" || email == "__meta__" {
             continue;
         }
         if let Some(n) = value.as_f64() {
-            data.insert(email.clone(), crate::models::AccountUsage {
-                reset_ts: Some(n),
-                used_percent: Some(0.0),
-                last_fetched: Some(0.0),
-                ..Default::default()
-            });
+            data.insert(
+                email.clone(),
+                crate::models::AccountUsage {
+                    reset_ts: Some(n),
+                    used_percent: Some(0.0),
+                    last_fetched: Some(0.0),
+                    ..Default::default()
+                },
+            );
             continue;
         }
         if !looks_like_account_payload(value) {
             continue;
         }
         if let Some(map) = value.as_object() {
-            let auto = map.get("auto_fetch").map(sanitize_auto_fetch).unwrap_or("None");
+            let auto = map
+                .get("auto_fetch")
+                .map(sanitize_auto_fetch)
+                .unwrap_or("None");
             if auto != "None" {
                 legacy_auto.insert(email.clone(), auto.to_string());
             }
@@ -192,17 +211,23 @@ fn parse_legacy_store(root: &Value) -> Option<(UsageMap, Meta)> {
         }
     }
     if !meta.contains_key("current_account_email") {
-        let candidates: Vec<&String> =
-            legacy_auto.keys().filter(|e| data.contains_key(*e)).collect();
+        let candidates: Vec<&String> = legacy_auto
+            .keys()
+            .filter(|e| data.contains_key(*e))
+            .collect();
         if candidates.len() == 1 {
-            meta.insert("current_account_email".into(), Value::String(candidates[0].clone()));
+            meta.insert(
+                "current_account_email".into(),
+                Value::String(candidates[0].clone()),
+            );
         }
     }
     Some((data, meta))
 }
 
 #[derive(Debug, PartialEq)]
-pub struct MigrationReport {    pub source: PathBuf,
+pub struct MigrationReport {
+    pub source: PathBuf,
     pub accounts_migrated: usize,
     pub auto_fetch: Option<String>,
     pub current_account_email: Option<String>,
@@ -270,7 +295,9 @@ pub fn migrate_legacy_account_dirs(accounts_dir: &PathBuf) {
         if legacy == *accounts_dir {
             continue;
         }
-        let Ok(entries) = fs::read_dir(&legacy) else { continue };
+        let Ok(entries) = fs::read_dir(&legacy) else {
+            continue;
+        };
         let _ = fs::create_dir_all(accounts_dir);
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -340,18 +367,18 @@ mod tests {
     #[test]
     fn full_migration_writes_v2_and_leaves_legacy_untouched() {
         // Simulate an old install: legacy files only, no v2 files.
-        let dir = std::env::temp_dir().join(format!(
-            "codex-legacy-e2e-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("codex-legacy-e2e-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let legacy_store = dir.join("legacy-home/.codex_usage_store.json");
         let v2_storage = dir.join("v2/usage.v2.json");
         let v2_meta = dir.join("v2/usage.v2.meta.json");
-        write(&legacy_store, &serde_json::json!({"user@example.com": {
+        write(
+            &legacy_store,
+            &serde_json::json!({"user@example.com": {
             "reset_ts": 123, "used_percent": 10,
             "auto_fetch": "1 Hr", "last_fetched": 100,
-            "jwt": "must-be-stripped"}}));
+            "jwt": "must-be-stripped"}}),
+        );
 
         // Point HOME at the fake legacy home so candidates resolve there.
         let old_home = std::env::var_os("HOME");
@@ -366,12 +393,14 @@ mod tests {
         let report = report.unwrap().unwrap();
         assert_eq!(report.accounts_migrated, 1);
         assert_eq!(report.auto_fetch.as_deref(), Some("1 Hr"));
-        assert_eq!(report.current_account_email.as_deref(), Some("user@example.com"));
+        assert_eq!(
+            report.current_account_email.as_deref(),
+            Some("user@example.com")
+        );
 
         // v2 files now exist with clean data; legacy file untouched.
         assert!(v2_storage.is_file());
-        let raw: Value =
-            serde_json::from_str(&fs::read_to_string(&v2_storage).unwrap()).unwrap();
+        let raw: Value = serde_json::from_str(&fs::read_to_string(&v2_storage).unwrap()).unwrap();
         let acc = raw["accounts"]["user@example.com"].as_object().unwrap();
         assert!(!acc.contains_key("jwt"));
         assert!(!acc.contains_key("auto_fetch"));

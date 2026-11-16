@@ -30,3 +30,8 @@ apps/desktop/dist/
 *.app.tar.gz
 *.app.tar.gz.sig
 CodexMonitor-macOS.zip
+
+# Local browser-test captures and Python bytecode
+.playwright-mcp/
+__pycache__/
+*.pyc

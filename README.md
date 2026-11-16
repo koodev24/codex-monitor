@@ -42,16 +42,18 @@ If you still run the original Python build, just use its built-in updater: v2 re
 - **Multi-account quotas** — remaining quota and reset countdowns for both the 5-hour and weekly windows, per account.
 - **Reset credits** — per-account ledger with expiry and remaining time.
 - **Fetching** — one-click quota fetch per account or all at once, plus configurable auto-fetch intervals.
-- **Account management** — add accounts via Codex login, archive the ones you don't use, switch the active Codex account (with optional app restart).
-- **Live logs** — always-visible log viewer with one-click clear and status copy.
+- **Account management** — add accounts via Codex login, archive the ones you don't use, and switch the active Codex account safely: Codex closes, fresh tokens are preserved, the selected session is written, and Codex reopens automatically.
+- **Menu-bar popover (macOS)** — the tray title shows the active account's 5-hour and weekly quota; click it for a compact account list, one-step switching, and dashboard access.
+- **Live logs** — a collapsible activity panel with one-click clear and status copy. It has a fixed height and cannot be resized.
 - **In-app updates** — signed update feed with manual check and automatic background checks.
 
 ## Usage
 
-1. Launch the app and click the **+** button to add an account via Codex login.
-2. Click the **refresh** button (or wait for auto-fetch) to pull quota for all accounts.
+1. Launch the app and click **Add account** to sign in through Codex login.
+2. Click **Refresh quota** (or wait for auto-fetch) to pull usage for the active account, or **Fetch all accounts** for every backup.
 3. Hover any toolbar button for what it does; click the **eye** to toggle archived accounts and the **sun/moon** for light/dark theme.
-4. Drag the divider between the account table and the tool panel to resize; double-click it to reset to the default split.
+4. Click **Activity** at the bottom to expand or collapse logs. Switching accounts asks once, then handles Codex close, credential switch, and reopen as a single action.
+5. On macOS, closing the window keeps Codex Monitor running in the menu bar. Use the tray popover to reopen the dashboard, or **Quit Codex Monitor** from its menu to exit.
 
 ## How updating works
 

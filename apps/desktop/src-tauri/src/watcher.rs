@@ -11,7 +11,11 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 /// successive writes coalesce (mirrors the 250ms settle + signature poll).
 pub fn file_signature(path: &Path) -> Option<(u64, i128)> {
     let meta = std::fs::metadata(path).ok()?;
-    let mtime = meta.modified().ok()?.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?;
     Some((meta.len(), mtime.as_nanos() as i128))
 }
 
@@ -72,8 +76,10 @@ impl AuthFileWatcher {
 
     pub fn start(&mut self) -> Result<(), String> {
         std::fs::create_dir_all(&self.watch_dir).map_err(|e| e.to_string())?;
-        let (tx_event, rx_event): (Sender<notify::Result<Event>>, Receiver<notify::Result<Event>>) =
-            mpsc::channel();
+        let (tx_event, rx_event): (
+            Sender<notify::Result<Event>>,
+            Receiver<notify::Result<Event>>,
+        ) = mpsc::channel();
         let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {
             let _ = tx_event.send(res);
         })

@@ -42,13 +42,14 @@ function sortFromColumn(col: string | null): SortKey | null {
 
 export const loadSnapshot = createAsyncThunk<void, void, { state: RootState }>(
   "snapshot/load",
-  async (_, { dispatch }) => {
+  async (_, { dispatch, getState }) => {
     let lastError = "unknown error";
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const s = await api.snapshot();
         dispatch(setSnapshot(s));
         dispatch(setLoadError(null));
+        if (getState().ui.status === "Starting…") dispatch(setStatus("Ready."));
         return;
       } catch (e) {
         lastError = `${e}`;
@@ -197,7 +198,10 @@ export const runConfirmAction = createAsyncThunk<void, void, { state: RootState 
   async (_, { getState, dispatch }) => {
     const confirm = getState().ui.confirm;
     if (!confirm || getState().ui.busy["confirm"]) return;
-    if (confirm.kind === "switch") dispatch(setStatus(`Switching to ${confirm.email}…`));
+    if (confirm.kind === "switch") {
+      dispatch(setStatus(`Switching to ${confirm.email}…`));
+      dispatch(setSwitchInfo(null));
+    }
     dispatch(setBusy({ key: "confirm", on: true }));
     try {
       if (confirm.kind === "remove") {
@@ -206,9 +210,9 @@ export const runConfirmAction = createAsyncThunk<void, void, { state: RootState 
       } else if (confirm.kind === "archive") {
         dispatch(setStatus(await api.setArchived(confirm.email, !confirm.archived)));
       } else {
-        const msg = await api.switchAccount(confirm.email);
-        dispatch(setStatus(msg));
-        dispatch(setSwitchInfo(confirm.email));
+        const result = await api.switchAccount(confirm.email);
+        dispatch(setStatus(result.message));
+        dispatch(setSwitchInfo(result));
       }
       await dispatch(loadSnapshot());
       await dispatch(refreshLogs());

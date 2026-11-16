@@ -29,9 +29,31 @@ export interface FetchResult {
   message: string;
 }
 
+export interface ImportedAccount extends FetchResult {
+  replaced: boolean;
+}
+
 export interface LoginDone {
   ok: boolean;
   message: string;
+}
+
+export interface SwitchResult {
+  email: string;
+  already_active: boolean;
+  codex_was_running: boolean;
+  codex_reopened: boolean;
+  warning: string | null;
+  message: string;
+}
+
+export interface CodexStatus {
+  supported: boolean;
+  installed: boolean;
+  running: boolean;
+  main_running: boolean;
+  process_count: number;
+  bundle_path: string | null;
 }
 
 export const api = {
@@ -40,7 +62,8 @@ export const api = {
   fetchBackup: (email: string) => invoke<FetchResult>("fetch_backup", { email }),
   checkAutoFetch: () => invoke<FetchResult | null>("check_auto_fetch"),
   processAuthFile: () => invoke<AuthOutcome>("process_auth_file"),
-  switchAccount: (email: string) => invoke<string>("switch_account", { email }),
+  switchAccount: (email: string) => invoke<SwitchResult>("switch_account", { email }),
+  codexStatus: () => invoke<CodexStatus>("codex_status"),
   removeAccount: (email: string) => invoke<string>("remove_account", { email }),
   setArchived: (email: string, archived: boolean) =>
     invoke<string>("set_archived", { email, archived }),
@@ -57,7 +80,14 @@ export const api = {
   importData: (path: string) => invoke<string>("import_data", { path }),
   logout: () => invoke<string>("logout"),
   loginStart: () => invoke<string>("login_start"),
+  importAuthJson: (path: string) =>
+    invoke<ImportedAccount>("import_auth_json", { path }),
+  importAuthJsonText: (text: string) =>
+    invoke<ImportedAccount>("import_auth_json_text", { text }),
   loginCancel: () => invoke<string>("login_cancel"),
   openLoginUrl: (url: string) => invoke<string>("open_login_url", { url }),
   restartCodex: () => invoke<string>("restart_codex"),
+  trayShowMain: () => invoke<void>("tray_show_main"),
+  trayHide: () => invoke<void>("tray_hide"),
+  quitApp: () => invoke<void>("app_quit"),
 };

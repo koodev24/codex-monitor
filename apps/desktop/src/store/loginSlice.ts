@@ -11,6 +11,7 @@ interface LoginState {
   starting: boolean;
   urlOpened: boolean;
   url: string | null;
+  error: string | null;
 }
 
 const initialState: LoginState = {
@@ -20,6 +21,7 @@ const initialState: LoginState = {
   starting: false,
   urlOpened: false,
   url: null,
+  error: null,
 };
 
 export const openLoginUrlOrDefault = createAsyncThunk<void, string, { state: RootState }>(
@@ -57,7 +59,8 @@ export const startLogin = createAsyncThunk<void, void, { state: RootState }>(
       const msg = await api.loginStart();
       dispatch(setStatus(msg));
     } catch (e) {
-      dispatch(appendLines([`Failed to start login: ${e}`]));
+      dispatch(setError(`${e}`));
+      dispatch(setStatus(`Could not start sign-in: ${e}`));
     } finally {
       dispatch(setStarting(false));
     }
@@ -93,6 +96,10 @@ const loginSlice = createSlice({
       state.done = null;
       state.urlOpened = false;
       state.url = null;
+      state.error = null;
+    },
+    setError(state, action: { payload: string | null }) {
+      state.error = action.payload;
     },
     setUrl(state, action: { payload: string }) {
       state.url = action.payload;
@@ -114,6 +121,14 @@ const loginSlice = createSlice({
   },
 });
 
-export const { setOpen, setStarting, resetLines, appendLines, markUrlOpened, setDone, setUrl } =
-  loginSlice.actions;
+export const {
+  setOpen,
+  setStarting,
+  resetLines,
+  appendLines,
+  markUrlOpened,
+  setDone,
+  setUrl,
+  setError,
+} = loginSlice.actions;
 export default loginSlice.reducer;

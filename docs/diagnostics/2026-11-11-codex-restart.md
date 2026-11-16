@@ -6,11 +6,9 @@ The earliest Python account-switch restart was introduced by `cf355da`, shipped 
 
 On the investigated Mac, native AppKit lookup for `com.openai.codex` returned `/Applications/ChatGPT.app`, with main executable `/Applications/ChatGPT.app/Contents/MacOS/ChatGPT`. The previous `pgrep -x Codex` check cannot identify that process. Name-based quit/open can also address the wrong application or fail to find it. The previous main-only check did not wait for desktop helpers, and an accepted `open` request was reported as success without checking the new process.
 
-## Reference research
+## Prior art
 
-[Codex Account Switcher](https://github.com/liuzhao1225/codex-account-switcher/blob/main/Sources/CodexAccountSwitcher/DesktopController.swift) (MIT, 138 GitHub stars when inspected) uses `NSRunningApplication` and `NSWorkspace` with bundle ID `com.openai.codex`. Its native identity and termination approach informed this implementation; its Swift code was not copied.
-
-[CodexSwitcher](https://github.com/Golps/CodexSwitcher/blob/main/Sources/CodexApp.swift) similarly checks native bundle identity and retries relaunch because macOS can temporarily retain a terminated instance. It also scopes helper termination. Its code was read for comparison, not copied.
+Two other account-switch tools were read to compare their restart behavior. Both identify the running app through AppKit (`NSRunningApplication`/`NSWorkspace`) with bundle ID `com.openai.codex` rather than a display name; one also retries relaunch because macOS can briefly retain a terminated instance, and scopes helper termination. No code was copied.
 
 ## Change
 

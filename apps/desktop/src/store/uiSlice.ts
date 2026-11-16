@@ -10,6 +10,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { api } from "../lib/tauri";
 import { refreshLogs } from "./logsSlice";
 import type { ResetCreditsPayload } from "../lib/format";
+import type { SwitchResult } from "../lib/tauri";
 import type { RootState } from "./store";
 
 function friendlyUpdateError(e: unknown): string | null {
@@ -49,7 +50,7 @@ interface UiState {
   confirm: ConfirmAction;
   resetsEmail: string | null;
   resets: ResetCreditsPayload | null;
-  switchInfo: string | null;
+  switchInfo: SwitchResult | null;
 }
 
 const initialState: UiState = {
@@ -190,7 +191,7 @@ const uiSlice = createSlice({
       state.resetsEmail = action.payload.email;
       state.resets = action.payload.data;
     },
-    setSwitchInfo(state, action: PayloadAction<string | null>) {
+    setSwitchInfo(state, action: PayloadAction<SwitchResult | null>) {
       state.switchInfo = action.payload;
     },
   },

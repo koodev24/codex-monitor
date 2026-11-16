@@ -6,7 +6,7 @@ stated build; unticked means it still needs a human pass. Refs #26.
 ## Accounts and quota (v2.2.x, macOS)
 
 - [x] Fetch quota for one account and for all accounts (status + spinners)
-- [x] 5h and weekly quota lines side by side when short-window data exists
+- [x] 5h and weekly quota bars render as separate lines when short-window data exists
 - [x] Weekly-only accounts render exactly as before
 - [x] Reset countdowns tick and clamp at zero
 - [x] Add account via Codex login, archive/unarchive, switch active account
@@ -16,8 +16,8 @@ stated build; unticked means it still needs a human pass. Refs #26.
 
 - [x] Export downloads `codex-monitor-backup.json`
 - [x] Import merges accounts newer-wins (never replaces), then reloads
-- [x] Logs always visible, clear works, survive panel resize (viewer hides
-      below 20% panel height instead of crushing)
+- [x] Activity panel collapses/expands, clear works, and the fixed-height log
+      viewer survives window resize
 
 ## Updates
 

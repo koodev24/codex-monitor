@@ -1,6 +1,37 @@
 //! Codex desktop lifecycle, independent of its display/executable name.
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::Duration;
+
+/// Serializes every operation that can close or relaunch Codex. The auth
+/// switch runs while this is held so two windows cannot interleave a close,
+/// a credential write, and a launch.
+static LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
+
+/// A snapshot of the Codex desktop used by the switch confirmation dialog.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct CodexStatus {
+    pub supported: bool,
+    pub installed: bool,
+    pub running: bool,
+    pub main_running: bool,
+    pub process_count: usize,
+    pub bundle_path: Option<String>,
+}
+
+/// Outcome of the close -> switch -> reopen sequence.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct SwitchOutcome {
+    pub codex_was_running: bool,
+    pub codex_reopened: bool,
+    pub warning: Option<String>,
+}
+
+fn lifecycle_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    LIFECYCLE_LOCK
+        .try_lock()
+        .map_err(|_| "Another Codex restart or account switch is already running.".to_string())
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct Process {
@@ -60,14 +91,16 @@ fn stop_remaining(desktop: &mut impl Desktop) -> Result<(), String> {
     Err("Codex processes did not stop; reopen cancelled to avoid overlapping instances.".into())
 }
 
-fn restart(desktop: &mut impl Desktop) -> Result<(), String> {
+fn close(desktop: &mut impl Desktop) -> Result<(), String> {
     if let Err(error) = desktop.quit() {
         desktop.log(&format!(
             "Restart: native quit failed ({error}); stopping bundle processes."
         ));
     }
-    stop_remaining(desktop)?;
-    desktop.sleep(Duration::from_millis(500));
+    stop_remaining(desktop)
+}
+
+fn reopen(desktop: &mut impl Desktop) -> Result<(), String> {
     let mut last_error = "launch accepted, but Codex main process did not stay running".to_string();
     for attempt in 1..=3 {
         desktop.log(&format!(
@@ -106,18 +139,114 @@ fn restart(desktop: &mut impl Desktop) -> Result<(), String> {
             desktop.sleep(Duration::from_millis(500));
         }
     }
-    Err(format!("Could not restart Codex: {last_error}. Open Codex manually; account switch remains applied."))
+    Err(format!(
+        "Could not restart Codex: {last_error}. Open Codex manually; account switch remains applied."
+    ))
+}
+
+fn restart(desktop: &mut impl Desktop) -> Result<(), String> {
+    close(desktop)?;
+    desktop.sleep(Duration::from_millis(500));
+    reopen(desktop)
+}
+
+/// Close Codex when needed, run the credential write, then reopen the exact
+/// bundle that was running. A reopen failure is reported as a warning because
+/// the switch itself already succeeded.
+fn run_switch_sequence(
+    desktop: &mut impl Desktop,
+    switch: impl FnOnce() -> Result<(), String>,
+) -> Result<SwitchOutcome, String> {
+    let running = !desktop.processes()?.is_empty();
+    if running {
+        desktop.log("Switch: closing Codex before writing the new session.");
+        close(desktop)?;
+        desktop.log("Switch: Codex closed; writing the selected account.");
+    }
+    if let Err(error) = switch() {
+        if running {
+            desktop.log("Switch: credential write failed; reopening Codex with the old session.");
+            let _ = reopen(desktop);
+        }
+        return Err(error);
+    }
+    if !running {
+        return Ok(SwitchOutcome::default());
+    }
+    desktop.sleep(Duration::from_millis(500));
+    match reopen(desktop) {
+        Ok(()) => Ok(SwitchOutcome {
+            codex_was_running: true,
+            codex_reopened: true,
+            warning: None,
+        }),
+        Err(error) => Ok(SwitchOutcome {
+            codex_was_running: true,
+            codex_reopened: false,
+            warning: Some(error),
+        }),
+    }
 }
 
 #[cfg(target_os = "macos")]
 pub fn run(log: impl Fn(&str)) -> Result<(), String> {
-    use std::sync::Mutex;
-    static RESTART_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = RESTART_LOCK
-        .try_lock()
-        .map_err(|_| "Codex restart already in progress.".to_string())?;
-    let mut desktop = native::MacDesktop::resolve(log)?;
+    let _guard = lifecycle_guard()?;
+    let Some(mut desktop) = native::MacDesktop::resolve(log)? else {
+        return Err("Codex desktop is not installed (com.openai.codex).".into());
+    };
     restart(&mut desktop)
+}
+
+#[cfg(target_os = "macos")]
+pub fn status() -> Result<CodexStatus, String> {
+    let _guard = lifecycle_guard()?;
+    let Some(mut desktop) = native::MacDesktop::resolve(|_| {})? else {
+        return Ok(CodexStatus {
+            supported: true,
+            installed: false,
+            ..Default::default()
+        });
+    };
+    let processes = desktop.processes()?;
+    Ok(CodexStatus {
+        supported: true,
+        installed: true,
+        running: !processes.is_empty(),
+        main_running: processes.iter().any(|process| process.main),
+        process_count: processes.len(),
+        bundle_path: Some(desktop.bundle.display().to_string()),
+    })
+}
+
+/// Close Codex if running, write auth through `switch`, then reopen the same
+/// bundle. `switch` runs while the lifecycle lock is held and must be sync.
+#[cfg(target_os = "macos")]
+pub fn switch_with_lifecycle(
+    switch: impl FnOnce() -> Result<(), String>,
+    log: impl Fn(&str),
+) -> Result<SwitchOutcome, String> {
+    let _guard = lifecycle_guard()?;
+    let Some(mut desktop) = native::MacDesktop::resolve(&log)? else {
+        switch()?;
+        return Ok(SwitchOutcome::default());
+    };
+    run_switch_sequence(&mut desktop, switch)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn status() -> Result<CodexStatus, String> {
+    Ok(CodexStatus::default())
+}
+
+/// Account switching is safe without a desktop lifecycle on platforms where
+/// the app cannot close/relaunch Codex yet.
+#[cfg(not(target_os = "macos"))]
+pub fn switch_with_lifecycle(
+    switch: impl FnOnce() -> Result<(), String>,
+    _log: impl Fn(&str),
+) -> Result<SwitchOutcome, String> {
+    switch()?;
+    Ok(SwitchOutcome::default())
 }
 
 #[cfg(target_os = "macos")]
@@ -127,9 +256,8 @@ mod native {
     use std::process::{Command, Output, Stdio};
     use std::time::Instant;
 
-    // AppKit identifies renamed apps without Apple Events automation permission.
-    // Adapted at the architectural level from the MIT Codex Account Switcher:
-    // https://github.com/liuzhao1225/codex-account-switcher/blob/main/Sources/CodexAccountSwitcher/DesktopController.swift
+    // AppKit identifies renamed apps without Apple Events automation permission:
+    // match the running process by its resolved bundle URL instead of its name.
     const APPKIT: &str = r#"
 ObjC.import('AppKit');
 function run(args) {
@@ -143,7 +271,7 @@ function run(args) {
     }
     var url = apps.count ? apps.objectAtIndex(0).bundleURL :
         $.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier(args[1]);
-    if (!url) throw new Error('Codex desktop is not installed (com.openai.codex).');
+    if (!url) return 'null';
     var bundle = $.NSBundle.bundleWithURL(url);
     return JSON.stringify({bundle: ObjC.unwrap(url.path), executable: ObjC.unwrap(bundle.executablePath)});
 }
@@ -191,22 +319,25 @@ function run(args) {
     }
 
     pub(super) struct MacDesktop<F> {
-        bundle: PathBuf,
+        pub(super) bundle: PathBuf,
         executable: PathBuf,
         bundle_id: String,
         log: F,
     }
 
     impl<F: Fn(&str)> MacDesktop<F> {
-        pub(super) fn resolve(log: F) -> Result<Self, String> {
+        pub(super) fn resolve(log: F) -> Result<Option<Self>, String> {
             let output = successful(appkit(&["resolve", "com.openai.codex"])?)?;
             #[derive(serde::Deserialize)]
             struct Location {
                 bundle: PathBuf,
                 executable: PathBuf,
             }
-            let location: Location = serde_json::from_slice(&output.stdout)
+            let location: Option<Location> = serde_json::from_slice(&output.stdout)
                 .map_err(|e| format!("Cannot resolve Codex bundle: {e}"))?;
+            let Some(location) = location else {
+                return Ok(None);
+            };
             if !location.bundle.is_dir()
                 || !location.executable.is_file()
                 || !location
@@ -220,12 +351,12 @@ function run(args) {
                 location.bundle.display(),
                 location.executable.display()
             ));
-            Ok(Self {
+            Ok(Some(Self {
                 bundle: location.bundle,
                 executable: location.executable,
                 bundle_id: "com.openai.codex".into(),
                 log,
-            })
+            }))
         }
     }
 
@@ -384,9 +515,11 @@ mod tests {
     #[derive(Default)]
     struct FakeDesktop {
         launched: usize,
+        running: bool,
         never_starts: bool,
         helpers: bool,
         refuse_stop: bool,
+        stop_clears_main: bool,
         force_stops: usize,
         polls: usize,
         fail_launches: usize,
@@ -411,6 +544,12 @@ mod tests {
                     main: false,
                 }]);
             }
+            if self.running {
+                return Ok(vec![Process {
+                    pid: if self.launched > 0 { 3 } else { 1 },
+                    main: true,
+                }]);
+            }
             Ok(
                 if self.launched > self.fail_launches && !self.never_starts {
                     vec![Process { pid: 3, main: true }]
@@ -432,12 +571,19 @@ mod tests {
             }
             if force && !self.refuse_stop {
                 self.helpers = false;
+                self.running = false;
+                if self.stop_clears_main {
+                    self.launched = 0;
+                }
             }
             Ok(())
         }
         fn launch(&mut self) -> Result<(), String> {
             assert!(!self.helpers, "must never launch while old helpers remain");
             self.launched += 1;
+            if !self.never_starts && self.launched > self.fail_launches {
+                self.running = true;
+            }
             if self.launched <= self.fail_launches {
                 Err("LaunchServices busy".into())
             } else {
@@ -520,5 +666,92 @@ mod tests {
         restart(&mut desktop).unwrap();
         assert_eq!(desktop.force_stops, 1);
         assert_eq!(desktop.launched, 1);
+    }
+
+    #[test]
+    fn switch_skips_lifecycle_when_codex_is_closed() {
+        let mut desktop = FakeDesktop::default();
+        let mut switched = false;
+        let outcome = run_switch_sequence(&mut desktop, || {
+            switched = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(switched);
+        assert_eq!(outcome, SwitchOutcome::default());
+        assert_eq!(desktop.launched, 0);
+    }
+
+    #[test]
+    fn switch_closes_writes_then_reopens_the_same_app() {
+        let mut desktop = FakeDesktop {
+            running: true,
+            ..Default::default()
+        };
+        let mut switched = false;
+        let outcome = run_switch_sequence(&mut desktop, || {
+            switched = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(switched);
+        assert_eq!(
+            outcome,
+            SwitchOutcome {
+                codex_was_running: true,
+                codex_reopened: true,
+                warning: None
+            }
+        );
+        assert_eq!(desktop.launched, 1, "one fresh launch after the close");
+    }
+
+    #[test]
+    fn switch_never_writes_auth_when_codex_cannot_close() {
+        let mut desktop = FakeDesktop {
+            launched: 1,
+            running: true,
+            stop_clears_main: false,
+            ..Default::default()
+        };
+        let mut switched = false;
+        let error = run_switch_sequence(&mut desktop, || {
+            switched = true;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(!switched, "auth must not change while Codex still runs");
+        assert!(error.contains("did not stop"));
+    }
+
+    #[test]
+    fn failed_auth_write_reopens_the_old_session() {
+        let mut desktop = FakeDesktop {
+            running: true,
+            stop_clears_main: true,
+            ..Default::default()
+        };
+        let error = run_switch_sequence(&mut desktop, || Err("write failed".into())).unwrap_err();
+        assert_eq!(error, "write failed");
+        assert_eq!(desktop.launched, 1, "reopened with the previous session");
+    }
+
+    #[test]
+    fn reopen_failure_is_reported_after_the_switch_succeeds() {
+        let mut desktop = FakeDesktop {
+            running: true,
+            never_starts: true,
+            ..Default::default()
+        };
+        let mut switched = false;
+        let outcome = run_switch_sequence(&mut desktop, || {
+            switched = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(switched);
+        assert!(outcome.codex_was_running);
+        assert!(!outcome.codex_reopened);
+        assert!(outcome.warning.is_some());
     }
 }

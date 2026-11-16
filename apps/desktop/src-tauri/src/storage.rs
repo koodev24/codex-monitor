@@ -88,7 +88,11 @@ fn sanitize_window(value: &Value) -> Option<RateLimitWindow> {
         ("reset_after_seconds", &mut w.reset_after_seconds),
         ("reset_at", &mut w.reset_at),
     ] {
-        if let Some(v) = map.get(field).filter(|v| is_number(v)).and_then(Value::as_f64) {
+        if let Some(v) = map
+            .get(field)
+            .filter(|v| is_number(v))
+            .and_then(Value::as_f64)
+        {
             *slot = Some(v);
             any = true;
         }
@@ -107,7 +111,11 @@ pub(crate) fn sanitize_account(value: &Value) -> Option<AccountUsage> {
         ("used_percent", &mut acc.used_percent),
         ("last_fetched", &mut acc.last_fetched),
     ] {
-        if let Some(v) = map.get(field).filter(|v| is_number(v)).and_then(Value::as_f64) {
+        if let Some(v) = map
+            .get(field)
+            .filter(|v| is_number(v))
+            .and_then(Value::as_f64)
+        {
             *slot = Some(v);
         }
     }
@@ -158,7 +166,12 @@ pub(crate) fn sanitize_meta(meta: &Map<String, Value>) -> Meta {
     if let Some(v @ Value::String(_)) | Some(v @ Value::Null) = meta.get("sort_column") {
         clean.insert("sort_column".into(), v.clone());
     }
-    for key in ["sort_asc", "show_archived", "show_5h_columns", "logs_expanded"] {
+    for key in [
+        "sort_asc",
+        "show_archived",
+        "show_5h_columns",
+        "logs_expanded",
+    ] {
         if let Some(v) = meta.get(key) {
             clean.insert(key.into(), Value::Bool(bool_of(v)));
         }
@@ -200,8 +213,7 @@ fn merge_account(existing: Option<&AccountUsage>, new_data: &AccountUsage) -> Ac
             merged.used_percent = new_data.used_percent;
         }
         merged.primary_window = merge_window(merged.primary_window, &new_data.primary_window);
-        merged.secondary_window =
-            merge_window(merged.secondary_window, &new_data.secondary_window);
+        merged.secondary_window = merge_window(merged.secondary_window, &new_data.secondary_window);
         merged.short_window = merge_window(merged.short_window, &new_data.short_window);
         merged.weekly_window = merge_window(merged.weekly_window, &new_data.weekly_window);
         if new_data.last_fetched.is_some() {
@@ -218,15 +230,14 @@ fn merge_account(existing: Option<&AccountUsage>, new_data: &AccountUsage) -> Ac
 }
 
 fn read_json(path: &Path) -> Option<Value> {
-    fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok())
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
 }
 fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    fs::write(path, serde_json::to_string(value).unwrap())
+    let text = serde_json::to_vec(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    crate::fsutil::write_atomic(path, &text, 0o600)
 }
 
 #[cfg(test)]
@@ -250,7 +261,11 @@ pub struct UsageStorage {
 
 impl UsageStorage {
     pub fn new(storage_path: PathBuf, meta_path: PathBuf) -> Self {
-        Self { storage_path, meta_path, meta: Meta::new() }
+        Self {
+            storage_path,
+            meta_path,
+            meta: Meta::new(),
+        }
     }
 
     pub fn with_defaults() -> Self {
@@ -274,9 +289,7 @@ impl UsageStorage {
     pub fn load(&mut self) -> UsageMap {
         let mut data: UsageMap = HashMap::new();
         self.meta = self.load_meta_file();
-        if let Some(Value::Object(root)) =
-            read_json(&self.storage_path).filter(|v| v.is_object())
-        {
+        if let Some(Value::Object(root)) = read_json(&self.storage_path).filter(|v| v.is_object()) {
             if let Some(Value::Object(accounts)) = root.get("accounts") {
                 for (email, value) in accounts {
                     if !looks_like_account_payload(value) {
@@ -349,9 +362,7 @@ impl UsageStorage {
             .ok_or_else(|| "Import file root must be a JSON object.".to_string())?;
 
         let raw_accounts: HashMap<String, &Value> = match root.get("accounts") {
-            Some(Value::Object(accounts)) => {
-                accounts.iter().map(|(k, v)| (k.clone(), v)).collect()
-            }
+            Some(Value::Object(accounts)) => accounts.iter().map(|(k, v)| (k.clone(), v)).collect(),
             _ => root
                 .iter()
                 .filter(|(k, _)| *k != "__meta__" && *k != "config" && *k != "schema_version")
@@ -374,8 +385,13 @@ impl UsageStorage {
 
         let mut merged = self.load();
         for (email, acc) in &imported {
-            let next = merge_account(merged.get(email), acc);
-            merged.insert(email.clone(), next);
+            let key = merged
+                .keys()
+                .find(|key| key.eq_ignore_ascii_case(email))
+                .cloned()
+                .unwrap_or_else(|| email.clone());
+            let next = merge_account(merged.get(&key), acc);
+            merged.insert(key, next);
         }
 
         let raw_config = root
@@ -407,8 +423,7 @@ mod tests {
 
     pub(crate) fn temp_paths(tag: &str) -> (PathBuf, PathBuf) {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir =
-            std::env::temp_dir().join(format!("codex-v2-{tag}-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codex-v2-{tag}-{}-{n}", std::process::id()));
         (dir.join(STORAGE_FILE_NAME), dir.join(META_FILE_NAME))
     }
 
@@ -427,7 +442,10 @@ mod tests {
         let mut st = UsageStorage::new(s.clone(), m.clone());
         let mut data = UsageMap::new();
         data.insert("a@example.com".into(), sample_account(50.0, 20.0));
-        st.set_meta_value("current_account_email", Some(Value::String("a@example.com".into())));
+        st.set_meta_value(
+            "current_account_email",
+            Some(Value::String("a@example.com".into())),
+        );
         st.set_meta_value("auto_fetch", Some(Value::String("12 Hrs".into())));
         st.save(&data).unwrap();
 
@@ -438,7 +456,10 @@ mod tests {
             st2.get_meta_value("current_account_email"),
             Some(&Value::String("a@example.com".into()))
         );
-        assert_eq!(st2.get_meta_value("auto_fetch"), Some(&Value::String("12 Hrs".into())));
+        assert_eq!(
+            st2.get_meta_value("auto_fetch"),
+            Some(&Value::String("12 Hrs".into()))
+        );
         // Envelope carries the version stamp.
         let raw: Value =
             serde_json::from_str(&fs::read_to_string(&st2.storage_path).unwrap()).unwrap();
@@ -520,6 +541,9 @@ mod tests {
         let mut st2 = UsageStorage::new(st.storage_path.clone(), st.meta_path.clone());
         st2.load();
         // Invalid labels normalize to "None" on save, same as Python.
-        assert_eq!(st2.get_meta_value("auto_fetch"), Some(&Value::String("None".into())));
+        assert_eq!(
+            st2.get_meta_value("auto_fetch"),
+            Some(&Value::String("None".into()))
+        );
     }
 }

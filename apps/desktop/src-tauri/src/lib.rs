@@ -4,15 +4,16 @@ use tauri::Manager;
 pub mod api;
 pub mod auth;
 pub mod commands;
-#[cfg(any(target_os = "macos", test))]
-mod restart;
-pub mod oauth_login;
 pub mod formatters;
+pub mod fsutil;
 #[cfg(feature = "legacy-migrate")]
 pub mod legacy;
 pub mod models;
+pub mod oauth_login;
+pub mod restart;
 pub mod state;
 pub mod storage;
+pub mod tray;
 pub mod watcher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -44,8 +45,7 @@ pub fn run() {
                         if scale > 0.0 {
                             let area = monitor.work_area();
                             let width = (area.size.width as f64 / scale * 0.8).round().max(540.0);
-                            let height =
-                                (area.size.height as f64 / scale * 0.8).round().max(320.0);
+                            let height = (area.size.height as f64 / scale * 0.8).round().max(320.0);
                             if let Err(e) = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
                                 width,
                                 height,
@@ -70,6 +70,18 @@ pub fn run() {
                 },
                 None => eprintln!("startup window: main window not found"),
             }
+            if let Some(win) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        if let Some(win) = handle.get_webview_window("main") {
+                            let _ = win.hide();
+                        }
+                    }
+                });
+            }
+            crate::tray::setup(app.handle())?;
             let handle = app.handle().clone();
             let auth = crate::auth::AuthFileService::with_defaults();
             let watch_dir = auth
@@ -88,6 +100,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(commands::all_commands())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                crate::tray::show_main_window(app);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }

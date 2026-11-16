@@ -10,9 +10,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::api::{ApiError, AuthRefreshClient, UsageApiClient};
-use crate::auth::{AuthFileService, HashMapEmailSnapshots};
+use crate::auth::{jwt_email, snapshot_email, AuthFileService, HashMapEmailSnapshots};
 use crate::models::{AuthFileSnapshot, AuthTokens, ResetCreditsPayload, UsageMap, UsageResponse};
-use crate::state::{AUTO_FETCH_OPTIONS, MonitorState, now_secs};
+use crate::state::{now_secs, usage_response_email, MonitorState, AUTO_FETCH_OPTIONS};
 use crate::storage::UsageStorage;
 use crate::watcher::file_signature;
 
@@ -63,6 +63,24 @@ pub struct FetchResult {
     pub message: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedAccount {
+    pub email: String,
+    pub message: String,
+    pub replaced: bool,
+}
+
+#[derive(Serialize)]
+pub struct SwitchResult {
+    pub email: String,
+    pub already_active: bool,
+    pub codex_was_running: bool,
+    pub codex_reopened: bool,
+    pub warning: Option<String>,
+    pub message: String,
+}
+
 fn boot_line(log_path: &Path, message: &str) {
     if let Some(parent) = log_path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -72,12 +90,58 @@ fn boot_line(log_path: &Path, message: &str) {
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
     let _ = writeln!(line, "[{ts}] {message}");
     use std::io::Write as _;
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(log_path) {
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }
 
-fn append_log(state: &AppState, message: &str) {    if message.is_empty() {
+/// Steps of a close -> write -> reopen sequence, surfaced to the switch
+/// dialog so it can show live progress instead of one opaque spinner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LifecycleStage {
+    Closing,
+    Switching,
+    Reopening,
+    Reopened,
+}
+
+impl LifecycleStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            LifecycleStage::Closing => "closing",
+            LifecycleStage::Switching => "switching",
+            LifecycleStage::Reopening => "reopening",
+            LifecycleStage::Reopened => "reopened",
+        }
+    }
+}
+
+fn stage_from_log(line: &str) -> Option<LifecycleStage> {
+    if line.contains("closing Codex") || line.contains("requesting native Codex termination") {
+        Some(LifecycleStage::Closing)
+    } else if line.contains("writing the selected account") {
+        Some(LifecycleStage::Switching)
+    } else if line.contains("launching resolved Codex bundle") {
+        Some(LifecycleStage::Reopening)
+    } else if line.contains("launch verified") {
+        Some(LifecycleStage::Reopened)
+    } else {
+        None
+    }
+}
+
+fn emit_stage(app: &AppHandle, line: &str) {
+    if let Some(stage) = stage_from_log(line) {
+        let _ = app.emit("switch-stage", stage.as_str());
+    }
+}
+
+fn append_log(state: &AppState, message: &str) {
+    if message.is_empty() {
         return;
     }
     if let Some(parent) = state.log_path.parent() {
@@ -88,7 +152,11 @@ fn append_log(state: &AppState, message: &str) {    if message.is_empty() {
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
     let _ = writeln!(line, "[{ts}] {message}");
     use std::io::Write as _;
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&state.log_path) {
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&state.log_path)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }
@@ -111,7 +179,10 @@ async fn fetch_remote(
     fallback_account_id: Option<&str>,
 ) -> Result<FetchedData, String> {
     let response: UsageResponse = api.fetch_usage(jwt).await.map_err(|e| e.to_string())?;
-    let account_id = response.account_id.clone().or_else(|| fallback_account_id.map(String::from));
+    let account_id = response
+        .account_id
+        .clone()
+        .or_else(|| fallback_account_id.map(String::from));
     let mut credits = None;
     if let Some(account_id) = account_id {
         match api.fetch_reset_credits(jwt, &account_id).await {
@@ -125,8 +196,9 @@ async fn fetch_remote(
     Ok(FetchedData { response, credits })
 }
 
-/// State half of a quota fetch. Mirrors _bg_fetch_single: apply usage ->
-/// backup current auth -> store reset credits. Lock held only here.
+/// State half of a quota fetch. Mirrors _bg_fetch_single: validate identity ->
+/// apply usage -> preserve the live session -> store reset credits. The lock
+/// is held only here.
 fn apply_fetched(
     st: &mut MonitorState,
     data: FetchedData,
@@ -135,16 +207,31 @@ fn apply_fetched(
     activate: bool,
     now: f64,
 ) -> Result<String, String> {
+    // Resolve and validate the response identity before touching usage or the
+    // current account. A mismatched fetch must leave state exactly as it was.
+    let email = usage_response_email(&data.response)
+        .ok_or_else(|| "Usage response had no usable account data.".to_string())?;
+    if let Some(expected) = expected_email.filter(|e| !e.is_empty()) {
+        if !expected.eq_ignore_ascii_case(&email) {
+            return Err(format!(
+                "Account changed during fetch ({expected} -> {email})."
+            ));
+        }
+    }
+    if let Some(token_email) = jwt_email(jwt) {
+        if !token_email.eq_ignore_ascii_case(&email) {
+            return Err(format!(
+                "The fetched quota belongs to {email}, but the token belongs to {token_email}. Nothing was saved."
+            ));
+        }
+    }
     let email = st
         .apply_usage_response(&data.response, jwt.to_string(), now, activate)
         .ok_or_else(|| "Usage response had no usable account data.".to_string())?;
-    if let Some(expected) = expected_email.filter(|e| !e.is_empty()) {
-        if expected != email {
-            return Err(format!("Account changed during fetch ({expected} -> {email})."));
-        }
-    }
     if activate {
-        let _ = st.auth.backup_current_auth(&email);
+        // Preserve the live session under the identity inside the file, never
+        // under the response email (they can disagree while a switch settles).
+        let _ = st.auth.backup_live_auth();
     }
     if let Some(credits) = data.credits {
         st.apply_reset_credits(&email, credits);
@@ -157,45 +244,90 @@ fn finalize_logout(st: &mut MonitorState, message: &str) -> AuthOutcome {
     st.last_access_token = None;
     st.last_refresh_marker = None;
     st.last_signature = None;
-    AuthOutcome::LoggedOut { message: message.into() }
+    AuthOutcome::LoggedOut {
+        message: message.into(),
+    }
 }
 
-#[tauri::command]
-pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
-    let st = state_lock(&state);
-    Snapshot {
-        accounts: st.usage.clone(),
-        current_email: st.current_email.clone(),
-        auto_fetch: st.auto_fetch.clone(),
-        auto_fetch_options: AUTO_FETCH_OPTIONS.iter().map(|s| s.to_string()).collect(),
-        sort_column: st.sort_column.clone(),
-        sort_asc: st.sort_asc,
-        show_archived: st.show_archived,
-        logs_expanded: st.logs_expanded,
-        auth_file_exists: st.auth.auth_file_exists(),
-        backup_emails: st.auth.list_backup_emails(),
-        app_version: app.package_info().version.to_string(),
+fn add_warning(slot: &mut Option<String>, message: String) {
+    match slot {
+        Some(existing) => {
+            existing.push(' ');
+            existing.push_str(&message);
+        }
+        None => *slot = Some(message),
     }
 }
 
 #[tauri::command]
+pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
+    let snapshot = {
+        let st = state_lock(&state);
+        let mut accounts = st.usage.clone();
+        // Saved sign-ins without usage (fresh imports, offline fetches) still
+        // belong in the list so they can be fetched or switched to.
+        for email in st.auth.list_backup_emails() {
+            if accounts.keys().any(|key| key.eq_ignore_ascii_case(&email)) {
+                continue;
+            }
+            accounts.insert(email, Default::default());
+        }
+        Snapshot {
+            accounts,
+            current_email: st.current_email.clone(),
+            auto_fetch: st.auto_fetch.clone(),
+            auto_fetch_options: AUTO_FETCH_OPTIONS.iter().map(|s| s.to_string()).collect(),
+            sort_column: st.sort_column.clone(),
+            sort_asc: st.sort_asc,
+            show_archived: st.show_archived,
+            logs_expanded: st.logs_expanded,
+            auth_file_exists: st.auth.auth_file_exists(),
+            backup_emails: st.auth.list_backup_emails(),
+            app_version: app.package_info().version.to_string(),
+        }
+    };
+    crate::tray::update_title(&app, &snapshot);
+    snapshot
+}
+
+#[tauri::command]
 pub async fn manual_fetch(state: State<'_, AppState>) -> Result<FetchResult, String> {
+    // Fetching can refresh the saved session, so it must not overlap a switch
+    // writing the same file from the other window.
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
     let api = UsageApiClient::new();
     let now = now_secs();
-    let (jwt, current, fallback_account) = {
+    let (jwt, expected, fallback_account) = {
         let st = state_lock(&state);
-        let jwt = st.latest_jwt_for(None).ok_or_else(|| "No signed-in account.".to_string())?;
-        let fallback = st
-            .auth
-            .load_snapshot()
-            .ok()
-            .and_then(|s| s.tokens)
-            .and_then(|t| t.account_id);
-        (jwt, st.current_email.clone(), fallback)
+        let live = st.auth.load_snapshot().ok();
+        let live_token = live
+            .as_ref()
+            .and_then(|snapshot| snapshot.tokens.as_ref())
+            .and_then(|tokens| tokens.access_token.clone())
+            .filter(|token| !token.is_empty());
+        let jwt = match live_token {
+            Some(token) => token,
+            None if live.is_some() => {
+                return Err("The active Codex session has no access token. Sign in again.".into())
+            }
+            None => st
+                .latest_jwt_for(None)
+                .ok_or_else(|| "No signed-in account.".to_string())?,
+        };
+        let expected = live
+            .as_ref()
+            .and_then(snapshot_email)
+            .or_else(|| st.current_email.clone())
+            .or_else(|| jwt_email(&jwt));
+        let fallback = live
+            .as_ref()
+            .and_then(|snapshot| snapshot.tokens.as_ref())
+            .and_then(|tokens| tokens.account_id.clone());
+        (jwt, expected, fallback)
     };
     let data = fetch_remote(&api, &jwt, fallback_account.as_deref()).await?;
     let mut st = state_lock(&state);
-    let email = apply_fetched(&mut st, data, &jwt, current.as_deref(), true, now)?;
+    let email = apply_fetched(&mut st, data, &jwt, expected.as_deref(), true, now)?;
     drop(st);
     let message = format!("Fetched quota for {email}.");
     append_log(&state, &message);
@@ -203,7 +335,11 @@ pub async fn manual_fetch(state: State<'_, AppState>) -> Result<FetchResult, Str
 }
 
 #[tauri::command]
-pub async fn fetch_backup(state: State<'_, AppState>, email: String) -> Result<FetchResult, String> {
+pub async fn fetch_backup(
+    state: State<'_, AppState>,
+    email: String,
+) -> Result<FetchResult, String> {
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
     let api = UsageApiClient::new();
     let refresher = AuthRefreshClient::new();
     let now = now_secs();
@@ -214,15 +350,19 @@ pub async fn fetch_backup(state: State<'_, AppState>, email: String) -> Result<F
                 "NO_BACKUP {email}: No saved sign-in for {email} (backup file missing). The quota row is kept, but it cannot be fetched without signing in again."
             ));
         }
-        let snap = st.auth.load_backup_snapshot(&email).map_err(|e| {
-            format!("Saved sign-in for {email} is unreadable ({e}). Remove the account if it is gone.")
+        let snap = st.auth.load_verified_backup(&email).map_err(|e| {
+            format!(
+                "Saved sign-in for {email} is unusable ({e}). Remove the account or sign in again."
+            )
         })?;
         let tokens = snap.tokens.clone().ok_or_else(|| {
             format!("No saved tokens for {email}. Remove the account if it is gone.")
         })?;
         let jwt = tokens.access_token.clone().unwrap_or_default();
         if jwt.is_empty() {
-            return Err(format!("No saved access token for {email}. Remove the account if it is gone."));
+            return Err(format!(
+                "No saved access token for {email}. Remove the account if it is gone."
+            ));
         }
         (jwt, tokens.account_id.clone())
     };
@@ -240,13 +380,22 @@ pub async fn fetch_backup(state: State<'_, AppState>, email: String) -> Result<F
             // held across .await (std MutexGuard is not Send).
             let auth_svc = {
                 let st = state_lock(&state);
-                AuthFileService::new(
-                    st.auth.auth_file_path.clone(),
-                    st.auth.accounts_dir.clone(),
-                )
+                AuthFileService::new(st.auth.auth_file_path.clone(), st.auth.accounts_dir.clone())
             };
-            let refreshed = auth_svc.refresh_backup_if_due(&email, &refresher, true, now).await?;
-            let jwt = refreshed.tokens.and_then(|t| t.access_token).unwrap_or_default();
+            let refreshed = auth_svc
+                .refresh_backup_if_due(&email, &refresher, true, now)
+                .await?;
+            if let Some(actual) = snapshot_email(&refreshed) {
+                if !actual.eq_ignore_ascii_case(&email) {
+                    return Err(format!(
+                        "The refreshed session belongs to {actual}, not {email}. Nothing was saved."
+                    ));
+                }
+            }
+            let jwt = refreshed
+                .tokens
+                .and_then(|t| t.access_token)
+                .unwrap_or_default();
             if jwt.is_empty() {
                 return Err("Token refresh produced no access token.".into());
             }
@@ -267,6 +416,74 @@ fn is_unauthorized(message: &str) -> bool {
     message.contains("401") || message.contains("expired")
 }
 
+/// Add an account from an existing Codex `auth.json` without activating it.
+/// The file is filed under the identity it carries; the live session and the
+/// Codex process are left untouched.
+#[tauri::command]
+pub async fn import_auth_json(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ImportedAccount, String> {
+    let source = PathBuf::from(path.trim());
+    if path.trim().is_empty() {
+        return Err("Choose an auth.json file to import.".into());
+    }
+    if !source.is_file() {
+        return Err(format!("No file at {}.", source.display()));
+    }
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
+    let snapshot = {
+        let st = state_lock(&state);
+        st.auth
+            .load_snapshot_from_path(&source)
+            .map_err(|e| format!("That file is not a readable Codex auth.json ({e})."))?
+    };
+    store_imported_snapshot(&state, &snapshot)
+}
+
+/// Import auth.json contents pasted into the Add account dialog. The text is
+/// never logged: it carries refresh tokens.
+#[tauri::command]
+pub async fn import_auth_json_text(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<ImportedAccount, String> {
+    if text.trim().is_empty() {
+        return Err("Paste the contents of an auth.json file to import.".into());
+    }
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
+    let snapshot = AuthFileService::parse_snapshot(&text)
+        .map_err(|e| format!("That pasted text is not a readable Codex auth.json ({e})."))?;
+    store_imported_snapshot(&state, &snapshot)
+}
+
+fn store_imported_snapshot(
+    state: &State<'_, AppState>,
+    snapshot: &crate::models::AuthFileSnapshot,
+) -> Result<ImportedAccount, String> {
+    let (email, replaced) = {
+        let st = state_lock(state);
+        let email = crate::auth::login_email(snapshot).ok_or_else(|| {
+            "That auth.json has no ChatGPT sign-in. Open Codex with it once, then import it again."
+                .to_string()
+        })?;
+        let replaced = st.auth.backup_exists(&email);
+        st.auth.import_backup_snapshot(snapshot)?;
+        (email, replaced)
+    };
+    let message = if replaced {
+        format!("Refreshed the saved sign-in for {email}.")
+    } else {
+        format!("Added {email}.")
+    };
+    append_log(state, &message);
+    Ok(ImportedAccount {
+        email,
+        message,
+        replaced,
+    })
+}
+
 /// Read the active auth file and reconcile. Mirrors process_auth_file.
 /// The frontend calls this on watcher events + a 5s poll (replacing the
 /// tkinter after() loop); retry backoff for MissingToken lives there too.
@@ -279,10 +496,17 @@ pub async fn process_auth_file(state: State<'_, AppState>) -> Result<AuthOutcome
         Refresh,
         Changed,
     }
+    struct ReadyAuth {
+        token: String,
+        marker: String,
+        fallback_account: Option<String>,
+        last_refresh: Option<String>,
+        live_email: Option<String>,
+    }
     // Phase 1: gather file state under a single short lock, then drop the
     // guard before any network I/O. Never nest state_lock (std Mutex is
     // non-reentrant) and never hold the guard across fetch_remote.
-    let ready: Option<(String, String, Option<String>, Option<String>)> = {
+    let ready: Option<ReadyAuth> = {
         let st = state_lock(&state);
         if !st.auth.auth_file_exists() {
             drop(st);
@@ -294,19 +518,38 @@ pub async fn process_auth_file(state: State<'_, AppState>) -> Result<AuthOutcome
         let snapshot = match st.auth.load_snapshot() {
             Ok(s) => s,
             Err(e) => {
-                return Ok(AuthOutcome::ParseError { message: format!("Could not read auth file: {e}") })
+                return Ok(AuthOutcome::ParseError {
+                    message: format!("Could not read auth file: {e}"),
+                })
             }
         };
-        let token = snapshot.tokens.clone().and_then(|t| t.access_token).unwrap_or_default();
+        let token = snapshot
+            .tokens
+            .clone()
+            .and_then(|t| t.access_token)
+            .unwrap_or_default();
         if token.is_empty() {
             return Ok(AuthOutcome::MissingToken);
         }
         let marker = snapshot.last_refresh.clone().unwrap_or_default();
         let last_refresh = snapshot.last_refresh.clone();
+        let live_email = snapshot_email(&snapshot);
         let fallback_account = snapshot.tokens.and_then(|t| t.account_id);
-        Some((token, marker, fallback_account, last_refresh))
+        Some(ReadyAuth {
+            token,
+            marker,
+            fallback_account,
+            last_refresh,
+            live_email,
+        })
     };
-    let (token, marker, fallback_account, last_refresh) = match ready {
+    let ReadyAuth {
+        token,
+        marker,
+        fallback_account,
+        last_refresh,
+        live_email,
+    } = match ready {
         Some(v) => v,
         None => return Ok(AuthOutcome::NoChange),
     };
@@ -315,6 +558,20 @@ pub async fn process_auth_file(state: State<'_, AppState>) -> Result<AuthOutcome
         let mut st = state_lock(&state);
         let refresh_changed = !marker.is_empty() && Some(marker.clone()) != st.last_refresh_marker;
         let token_changed = Some(token.clone()) != st.last_access_token;
+        let identity_changed = live_email
+            .as_deref()
+            .map(|email| {
+                st.current_email
+                    .as_deref()
+                    .map(|current| !current.eq_ignore_ascii_case(email))
+                    .unwrap_or(true)
+            })
+            .unwrap_or(false);
+        if identity_changed {
+            if let Some(email) = live_email.clone() {
+                st.set_current(email, token.clone());
+            }
+        }
         let auth_path = st.auth.auth_file_path.clone();
         st.last_signature = file_signature(&auth_path);
         st.last_refresh_marker = last_refresh;
@@ -322,7 +579,7 @@ pub async fn process_auth_file(state: State<'_, AppState>) -> Result<AuthOutcome
         st.latest_jwt = Some(token.clone());
         if refresh_changed {
             Need::Refresh
-        } else if token_changed {
+        } else if token_changed || identity_changed {
             Need::Changed
         } else {
             Need::Idle
@@ -337,7 +594,7 @@ pub async fn process_auth_file(state: State<'_, AppState>) -> Result<AuthOutcome
         Need::Refresh => match fetch_remote(&api, &token, fallback_account.as_deref()).await {
             Ok(data) => {
                 let mut st = state_lock(&state);
-                match apply_fetched(&mut st, data, &token, None, true, now) {
+                match apply_fetched(&mut st, data, &token, live_email.as_deref(), true, now) {
                     Ok(email) => {
                         drop(st);
                         let message = format!("Detected Codex auth refresh; fetched {email}.");
@@ -352,7 +609,7 @@ pub async fn process_auth_file(state: State<'_, AppState>) -> Result<AuthOutcome
         Need::Changed => match fetch_remote(&api, &token, fallback_account.as_deref()).await {
             Ok(data) => {
                 let mut st = state_lock(&state);
-                match apply_fetched(&mut st, data, &token, None, true, now) {
+                match apply_fetched(&mut st, data, &token, live_email.as_deref(), true, now) {
                     Ok(email) => {
                         drop(st);
                         let message = format!("Fetched quota for {email}.");
@@ -377,58 +634,244 @@ pub async fn process_auth_file(state: State<'_, AppState>) -> Result<AuthOutcome
     Ok(outcome)
 }
 
+/// One-step safe switch. When Codex is running this closes it, writes the
+/// selected session, and reopens the same bundle. A quota fetch failure never
+/// turns an applied switch into an error.
 #[tauri::command]
-pub async fn switch_account(state: State<'_, AppState>, email: String) -> Result<String, String> {
-    let current = state_lock(&state).current_email.clone();
-    {
+pub async fn switch_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    email: String,
+) -> Result<SwitchResult, String> {
+    let _auth_guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
+    let current = {
         let st = state_lock(&state);
-        st.auth.switch_to_account_backup(&email, current.as_deref())?;
+        if !st.auth.backup_exists(&email) {
+            return Err(format!(
+                "No saved sign-in for {email}. Sign in to it again before switching."
+            ));
+        }
+        st.auth
+            .load_snapshot()
+            .ok()
+            .and_then(|snapshot| snapshot_email(&snapshot))
+            .or_else(|| st.current_email.clone())
+    };
+
+    let already_active = {
+        let st = state_lock(&state);
+        st.auth
+            .target_already_active(&email)
+            .map_err(|e| format!("Could not read the live Codex session: {e}"))?
+    };
+
+    if already_active {
+        let (jwt, fallback) = {
+            let mut st = state_lock(&state);
+            let jwt = st
+                .auth
+                .load_access_token()
+                .ok_or_else(|| "The active session has no access token.".to_string())?;
+            let fallback = st
+                .auth
+                .load_snapshot()
+                .ok()
+                .and_then(|s| s.tokens)
+                .and_then(|t| t.account_id);
+            st.set_current(email.clone(), jwt.clone());
+            (jwt, fallback)
+        };
+        drop(_auth_guard);
+        let mut warning = None;
+        refresh_quota_after_switch(&state, &email, &jwt, fallback.as_deref(), &mut warning).await;
+        let message = format!("Already using {email}.");
+        append_log(&state, &message);
+        return Ok(SwitchResult {
+            email,
+            already_active: true,
+            codex_was_running: false,
+            codex_reopened: false,
+            warning,
+            message,
+        });
     }
-    // Fetch fresh quota for the newly activated account.
-    let (jwt, fallback_account) = {
+
+    // Chat refresh tokens are single-use. Refresh a stale saved session
+    // before it is copied over the live file; when that fails the credentials
+    // cannot be trusted, so stop before Codex is touched instead of launching
+    // it on a dead session.
+    let auth_svc = {
         let st = state_lock(&state);
+        AuthFileService::new(st.auth.auth_file_path.clone(), st.auth.accounts_dir.clone())
+    };
+    let mut warning = None;
+    if let Err(error) = auth_svc
+        .refresh_backup_if_due(&email, &AuthRefreshClient::new(), false, now_secs())
+        .await
+    {
+        let message = format!(
+            "Could not prepare the saved session for {email}: {error} Codex was left untouched. Sign in to that account again, then switch."
+        );
+        append_log(&state, &message);
+        return Err(message);
+    }
+
+    append_log(
+        &state,
+        &match current.as_deref() {
+            Some(current) if current != email => {
+                format!("Switch requested: {current} -> {email}.")
+            }
+            _ => format!("Switch requested: {email}."),
+        },
+    );
+
+    let app_worker = app.clone();
+    let app_log = app.clone();
+    let email_worker = email.clone();
+    let current_worker = current.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_worker.state::<AppState>();
+        crate::restart::switch_with_lifecycle(
+            || {
+                let st = state_lock(&state);
+                st.auth
+                    .switch_to_account_checked(&email_worker, current_worker.as_deref())
+                    .map(|_| ())
+            },
+            |line| {
+                append_log(&state, line);
+                emit_stage(&app_log, line);
+            },
+        )
+    })
+    .await
+    .map_err(|error| format!("Switch worker failed: {error}"))
+    .and_then(|result| {
+        if result.is_err() {
+            let _ = app.emit("switch-stage", "failed");
+        }
+        result
+    })?;
+    let _ = app.emit("switch-stage", "done");
+
+    let (jwt, fallback, active_email) = {
+        let mut st = state_lock(&state);
+        let live = st.auth.load_snapshot().ok();
+        let live_email = live.as_ref().and_then(snapshot_email);
+        if let Some(live_email) = live_email.as_deref() {
+            if !live_email.eq_ignore_ascii_case(&email) {
+                add_warning(
+                    &mut warning,
+                    format!(
+                        "Codex reopened with {live_email} instead of {email}. Switch again or re-add that account."
+                    ),
+                );
+            }
+            // Codex may refresh tokens the moment it starts. File the live
+            // session back under its own identity so a later switch never
+            // restores an already-rotated refresh token.
+            let _ = st.auth.backup_live_auth();
+        }
         let jwt = st
             .auth
             .load_access_token()
-            .ok_or_else(|| "Activated account has no access token.".to_string())?;
-        let fallback = st
-            .auth
-            .load_snapshot()
-            .ok()
-            .and_then(|s| s.tokens)
-            .and_then(|t| t.account_id);
-        (jwt, fallback)
+            .ok_or_else(|| "The switched session has no access token.".to_string())?;
+        let fallback = live
+            .and_then(|snapshot| snapshot.tokens)
+            .and_then(|tokens| tokens.account_id);
+        let active = live_email.unwrap_or_else(|| email.clone());
+        st.set_current(active.clone(), jwt.clone());
+        (jwt, fallback, active)
     };
-    let api = UsageApiClient::new();
-    let data = fetch_remote(&api, &jwt, fallback_account.as_deref()).await?;
-    let mut st = state_lock(&state);
-    let fetched = apply_fetched(&mut st, data, &jwt, Some(&email), true, now_secs())?;
-    drop(st);
-    let message = format!("Switched to {fetched}.");
-    append_log(&state, &message);
-    Ok(message)
-}
+    drop(_auth_guard);
 
-#[tauri::command]
-pub fn remove_account(state: State<AppState>, email: String) -> Result<String, String> {
-    let mut st = state_lock(&state);
-    if !st.remove_account(&email) {
-        return Err(format!("Unknown account {email}."));
+    refresh_quota_after_switch(
+        &state,
+        &active_email,
+        &jwt,
+        fallback.as_deref(),
+        &mut warning,
+    )
+    .await;
+
+    let message = if outcome.codex_was_running && outcome.codex_reopened {
+        format!("Switched to {email}. Codex reopened with the new session.")
+    } else if outcome.codex_was_running {
+        format!("Switched to {email}. Codex did not reopen — open it manually.")
+    } else {
+        format!("Switched to {email}.")
+    };
+    if let Some(warning) = &warning {
+        append_log(&state, &format!("Switch warning: {warning}"));
     }
-    st.auth.remove_backup(&email);
-    let message = format!("Removed {email}.");
+    append_log(&state, &message);
+    let _ = app.emit("switch-completed", &message);
+
+    Ok(SwitchResult {
+        email,
+        already_active: false,
+        codex_was_running: outcome.codex_was_running,
+        codex_reopened: outcome.codex_reopened,
+        warning,
+        message,
+    })
+}
+
+async fn refresh_quota_after_switch(
+    state: &State<'_, AppState>,
+    email: &str,
+    jwt: &str,
+    fallback_account_id: Option<&str>,
+    warning: &mut Option<String>,
+) {
+    let api = UsageApiClient::new();
+    match fetch_remote(&api, jwt, fallback_account_id).await {
+        Ok(data) => {
+            let mut st = state_lock(state);
+            if let Err(error) = apply_fetched(&mut st, data, jwt, Some(email), false, now_secs()) {
+                add_warning(warning, format!("Quota refresh failed: {error}"));
+            }
+        }
+        Err(error) => add_warning(warning, format!("Quota refresh failed: {error}")),
+    }
+}
+
+#[tauri::command]
+pub fn codex_status() -> Result<crate::restart::CodexStatus, String> {
+    crate::restart::status()
+}
+
+#[tauri::command]
+pub async fn remove_account(state: State<'_, AppState>, email: String) -> Result<String, String> {
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
+    let mut st = state_lock(&state);
+    let key = st.canonical_key(&email).unwrap_or(email);
+    if !st.remove_account(&key) {
+        return Err(format!("Unknown account {key}."));
+    }
+    st.auth.remove_backup(&key);
+    let message = format!("Removed {key}.");
+    drop(st);
     append_log(&state, &message);
     Ok(message)
 }
 
 #[tauri::command]
-pub fn set_archived(state: State<AppState>, email: String, archived: bool) -> Result<String, String> {
+pub fn set_archived(
+    state: State<AppState>,
+    email: String,
+    archived: bool,
+) -> Result<String, String> {
     let mut st = state_lock(&state);
     if !st.set_archived(&email, archived) {
         return Err(format!("Unknown account {email}."));
     }
-    let message =
-        if archived { format!("Archived {email}.") } else { format!("Unarchived {email}.") };
+    let message = if archived {
+        format!("Archived {email}.")
+    } else {
+        format!("Unarchived {email}.")
+    };
     append_log(&state, &message);
     Ok(message)
 }
@@ -464,7 +907,10 @@ pub fn save_logs_expanded(state: State<AppState>, expanded: bool) -> Result<(), 
 
 #[tauri::command]
 pub fn get_resets(state: State<AppState>, email: String) -> Option<ResetCreditsPayload> {
-    state_lock(&state).usage.get(&email).and_then(|a| a.resets.clone())
+    state_lock(&state)
+        .usage
+        .get(&email)
+        .and_then(|a| a.resets.clone())
 }
 
 #[tauri::command]
@@ -503,22 +949,29 @@ pub fn log_message(state: State<AppState>, message: String) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn export_data(state: State<AppState>, path: String) -> Result<String, String> {
-    let st = state_lock(&state);
-    let payload = st.storage.export_data(&st.usage);
-    let backups: HashMapEmailSnapshots = st.auth.export_backups(&[]);
-    let combined = serde_json::json!({
-        "schema_version": 2,
-        "accounts": payload["accounts"],
-        "config": payload["config"],
-        "backups": backups,
-    });
-    fs::write(&path, serde_json::to_string_pretty(&combined).unwrap()).map_err(|e| e.to_string())?;
+pub async fn export_data(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
+    let combined = {
+        let st = state_lock(&state);
+        let payload = st.storage.export_data(&st.usage);
+        let backups: HashMapEmailSnapshots = st.auth.export_backups(&[]);
+        serde_json::json!({
+            "schema_version": 2,
+            "accounts": payload["accounts"],
+            "config": payload["config"],
+            "backups": backups,
+        })
+    };
+    let text = serde_json::to_vec_pretty(&combined)
+        .map_err(|e| format!("Could not serialize export: {e}"))?;
+    crate::fsutil::write_atomic(std::path::Path::new(&path), &text, 0o600)
+        .map_err(|e| format!("Could not write export: {e}"))?;
     Ok(format!("Exported to {path}."))
 }
 
 #[tauri::command]
-pub fn import_data(state: State<AppState>, path: String) -> Result<String, String> {
+pub async fn import_data(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
     let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let payload: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("Import file is not valid JSON: {e}"))?;
@@ -527,20 +980,32 @@ pub fn import_data(state: State<AppState>, path: String) -> Result<String, Strin
     if let Some(backups) = payload.get("backups").and_then(|v| v.as_object()) {
         let typed: HashMapEmailSnapshots = backups
             .iter()
-            .filter_map(|(k, v)| serde_json::from_value(v.clone()).ok().map(|s| (k.clone(), s)))
+            .filter_map(|(k, v)| {
+                serde_json::from_value(v.clone())
+                    .ok()
+                    .map(|s| (k.clone(), s))
+            })
             .collect();
         st.auth.import_backups(&typed);
     }
     // Re-read merged state (import_data already saved through storage).
     st.usage = merged;
     st.current_email = st
-        .storage
-        .get_meta_value("current_account_email")
-        .and_then(|v| v.as_str().map(String::from))
-        .filter(|e| st.usage.contains_key(e));
+        .auth
+        .load_snapshot()
+        .ok()
+        .and_then(|snapshot| snapshot_email(&snapshot))
+        .and_then(|email| st.canonical_key(&email))
+        .or_else(|| {
+            st.storage
+                .get_meta_value("current_account_email")
+                .and_then(|v| v.as_str().map(String::from))
+                .filter(|e| st.usage.contains_key(e))
+        });
     st.session_tokens.clear();
     st.latest_jwt = None;
     let message = format!("Imported {} account(s).", st.usage.len());
+    drop(st);
     append_log(&state, &message);
     Ok(message)
 }
@@ -560,19 +1025,46 @@ pub async fn check_auto_fetch(state: State<'_, AppState>) -> Result<Option<Fetch
     let now = now_secs();
     let (jwt, current, fallback_account) = {
         let mut st = state_lock(&state);
-        let Some(jwt) = st.due_auto_fetch_jwt(now) else { return Ok(None) };
-        let fallback = st
-            .auth
-            .load_snapshot()
-            .ok()
-            .and_then(|s| s.tokens)
-            .and_then(|t| t.account_id);
-        (jwt, st.current_email.clone(), fallback)
+        let live = st.auth.load_snapshot().ok();
+        let live_email = live.as_ref().and_then(snapshot_email);
+        let live_token = live
+            .as_ref()
+            .and_then(|snapshot| snapshot.tokens.as_ref())
+            .and_then(|tokens| tokens.access_token.clone())
+            .filter(|token| !token.is_empty());
+        if let (Some(live_email), Some(live_token)) = (live_email.clone(), live_token.clone()) {
+            let differs = st
+                .current_email
+                .as_deref()
+                .map(|current| !current.eq_ignore_ascii_case(&live_email))
+                .unwrap_or(true);
+            if differs {
+                st.set_current(live_email, live_token);
+            }
+        }
+        let Some(current) = st.due_auto_fetch_email(now) else {
+            return Ok(None);
+        };
+        let jwt = if live_email
+            .as_deref()
+            .map(|email| email.eq_ignore_ascii_case(&current))
+            .unwrap_or(false)
+        {
+            live_token
+        } else {
+            st.latest_jwt_for(Some(&current))
+        };
+        let Some(jwt) = jwt else { return Ok(None) };
+        let fallback = live
+            .as_ref()
+            .and_then(|snapshot| snapshot.tokens.as_ref())
+            .and_then(|tokens| tokens.account_id.clone());
+        (jwt, current, fallback)
     };
     match fetch_remote(&api, &jwt, fallback_account.as_deref()).await {
         Ok(data) => {
             let mut st = state_lock(&state);
-            match apply_fetched(&mut st, data, &jwt, current.as_deref(), true, now) {
+            match apply_fetched(&mut st, data, &jwt, Some(current.as_str()), true, now) {
                 Ok(email) => {
                     drop(st);
                     let message = format!("Auto-fetched quota for {email}.");
@@ -606,14 +1098,16 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
     // the callback and the tokens are exchanged in-process.
     let pkce = crate::oauth_login::generate_pkce();
     let oauth_state = crate::oauth_login::generate_state();
-    let (port, outcome) =
-        match crate::oauth_login::start_callback_server(crate::oauth_login::CALLBACK_PORT, oauth_state.clone()) {
-            Ok(v) => v,
-            Err(_) => crate::oauth_login::start_callback_server(
-                crate::oauth_login::FALLBACK_PORT,
-                oauth_state.clone(),
-            )?,
-        };
+    let (port, outcome) = match crate::oauth_login::start_callback_server(
+        crate::oauth_login::CALLBACK_PORT,
+        oauth_state.clone(),
+    ) {
+        Ok(v) => v,
+        Err(_) => crate::oauth_login::start_callback_server(
+            crate::oauth_login::FALLBACK_PORT,
+            oauth_state.clone(),
+        )?,
+    };
     let inner = crate::oauth_login::authorize_url(
         crate::api::AUTH_REFRESH_CLIENT_ID,
         port,
@@ -686,6 +1180,8 @@ pub fn login_start(app: AppHandle, state: State<AppState>) -> Result<String, Str
 }
 
 fn finish_native_login(app: &AppHandle, state: &State<AppState>, code: String) {
+    // Activation rewrites the live auth file; never overlap a switch.
+    let _auth_guard = tauri::async_runtime::block_on(crate::auth::AUTH_OPERATION_LOCK.lock());
     let api = UsageApiClient::new();
     let fail = |message: String| {
         if let Some(sess) = state.login.lock().unwrap().take() {
@@ -693,7 +1189,10 @@ fn finish_native_login(app: &AppHandle, state: &State<AppState>, code: String) {
             st.auth.remove_login_codex_home(Some(&sess.home));
         }
         append_log(state, &message);
-        let _ = app.emit("codex-login-done", serde_json::json!({"ok": false, "message": message}));
+        let _ = app.emit(
+            "codex-login-done",
+            serde_json::json!({"ok": false, "message": message}),
+        );
     };
     let (home, verifier, port) = match state.login.lock().unwrap().as_ref() {
         Some(s) => (s.home.clone(), s.verifier.clone(), s.port),
@@ -727,9 +1226,9 @@ fn finish_native_login(app: &AppHandle, state: &State<AppState>, code: String) {
             return;
         }
     };
-    let jwt = tokens.access_token.clone();
+    let access_token = tokens.access_token.clone();
     let account_id = crate::oauth_login::account_id_from_id_token(&tokens.id_token);
-    let snapshot = AuthFileSnapshot {
+    let mut snapshot = AuthFileSnapshot {
         auth_mode: Some("chatgpt".into()),
         openai_api_key: None,
         tokens: Some(AuthTokens {
@@ -739,75 +1238,106 @@ fn finish_native_login(app: &AppHandle, state: &State<AppState>, code: String) {
             account_id,
             extra: tokens.extra.clone(),
         }),
-        last_refresh: Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()),
+        last_refresh: Some(
+            chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                .to_string(),
+        ),
         email: None,
         extra: Default::default(),
     };
-    {
-        let st = state_lock(state);
-        let path = st.auth.active_auth_path_for_home(&home);
-        let text = match serde_json::to_string_pretty(&snapshot) {
-            Ok(t) => t,
+    let claimed_email = snapshot_email(&snapshot).or_else(|| jwt_email(&access_token));
+    let response: UsageResponse =
+        match tauri::async_runtime::block_on(api.fetch_usage(&access_token)) {
+            Ok(r) => r,
             Err(e) => {
-                drop(st);
-                fail(format!("Login failed: {e}"));
+                fail(format!("Login succeeded but quota fetch failed: {e}"));
                 return;
             }
         };
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if let Err(e) = fs::write(&path, text) {
-            drop(st);
-            fail(format!("Login failed: {e}"));
-            return;
-        }
-    }
-    let response: UsageResponse = match tauri::async_runtime::block_on(api.fetch_usage(&jwt)) {
-        Ok(r) => r,
-        Err(e) => {
-            fail(format!("Login succeeded but quota fetch failed: {e}"));
+    let response_email = match usage_response_email(&response) {
+        Some(email) => email,
+        None => {
+            fail("Login produced no usable account.".into());
             return;
         }
     };
-    let message = {
-        let mut st = state_lock(state);
-        let email = match st.apply_usage_response(&response, jwt.clone(), now_secs(), false) {
-            Some(e) => e,
-            None => {
-                drop(st);
-                fail("Login produced no usable account.".into());
-                return;
-            }
-        };
-        if let Some(current) = st.current_email.clone() {
-            if current != email {
-                let _ = st.auth.backup_current_auth(&current);
-            }
-        }
-        let source = st.auth.active_auth_path_for_home(&home);
-        if let Err(e) = st.auth.activate_auth_from_path(&source) {
-            drop(st);
-            fail(format!("Could not activate the new account: {e}"));
+    if let Some(claimed) = claimed_email.as_deref() {
+        if !claimed.eq_ignore_ascii_case(&response_email) {
+            fail(format!(
+                "Sign-in identity changed ({claimed} -> {response_email}). Nothing was activated."
+            ));
             return;
         }
-        st.set_current(email.clone(), jwt);
+    }
+    snapshot.email = Some(response_email.clone());
+
+    let auth_svc = {
+        let st = state_lock(state);
+        AuthFileService::new(st.auth.auth_file_path.clone(), st.auth.accounts_dir.clone())
+    };
+    let source = auth_svc.active_auth_path_for_home(&home);
+    if let Err(e) = auth_svc.write_snapshot_to_path(&source, &snapshot) {
+        fail(format!("Login failed: {e}"));
+        return;
+    }
+    // Adding an account is not a switch: the live Codex sign-in and the
+    // running Codex process stay exactly as they are. The new session is
+    // filed under its own identity so the user can activate it later.
+    let live_backup_error = {
+        let st = state_lock(state);
+        if st.auth.auth_file_exists() {
+            st.auth.backup_live_auth().err()
+        } else {
+            None
+        }
+    };
+    if let Some(e) = live_backup_error {
+        append_log(
+            state,
+            &format!("Previous Codex session could not be backed up ({e}); continuing."),
+        );
+    }
+    let added = {
+        let st = state_lock(state);
+        st.auth.import_backup_snapshot(&snapshot)
+    };
+    let email = match added {
+        Ok(email) => email,
+        Err(e) => {
+            fail(format!("Could not save the new account: {e}"));
+            return;
+        }
+    };
+
+    let message = {
+        let mut st = state_lock(state);
+        if st
+            .apply_usage_response(&response, access_token.clone(), now_secs(), false)
+            .is_none()
+        {
+            drop(st);
+            fail("Login produced no usable account.".into());
+            return;
+        }
         if let Some(account_id) = response.account_id.clone() {
-            let jwt = st.latest_jwt_for(Some(&email)).unwrap_or_default();
             if let Ok(credits) =
-                tauri::async_runtime::block_on(api.fetch_reset_credits(&jwt, &account_id))
+                tauri::async_runtime::block_on(api.fetch_reset_credits(&access_token, &account_id))
             {
                 st.apply_reset_credits(&email, credits);
             }
         }
-        format!("Signed in as {email}.")
+        format!("Added {email}. Switch to it from the list when you're ready.")
     };
     if state.login.lock().unwrap().take().is_some() {
         let st = state_lock(state);
         st.auth.remove_login_codex_home(Some(&home));
     }
     append_log(state, &message);
-    let _ = app.emit("codex-login-done", serde_json::json!({"ok": true, "message": message}));
+    let _ = app.emit(
+        "codex-login-done",
+        serde_json::json!({"ok": true, "message": message}),
+    );
 }
 
 #[tauri::command]
@@ -870,9 +1400,16 @@ pub async fn restart_codex(app: AppHandle) -> Result<String, String> {
         tauri::async_runtime::spawn_blocking(move || {
             let state = app.state::<AppState>();
             append_log(&state, "Restart requested for Codex app.");
-            match crate::restart::run(|message| append_log(&state, message)) {
-                Ok(()) => Ok("Restarted the Codex app.".into()),
+            match crate::restart::run(|message| {
+                append_log(&state, message);
+                emit_stage(&app, message);
+            }) {
+                Ok(()) => {
+                    let _ = app.emit("switch-stage", "done");
+                    Ok("Restarted the Codex app.".into())
+                }
                 Err(error) => {
+                    let _ = app.emit("switch-stage", "failed");
                     append_log(&state, &format!("Restart failed: {error}"));
                     Err(error)
                 }
@@ -888,8 +1425,24 @@ pub async fn restart_codex(app: AppHandle) -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+pub fn tray_show_main(app: AppHandle) {
+    crate::tray::show_main_window(&app);
+}
+
+#[tauri::command]
+pub fn tray_hide(app: AppHandle) {
+    crate::tray::hide(&app);
+}
+
+#[tauri::command]
+pub fn app_quit(app: AppHandle) {
+    crate::tray::quit(&app);
+}
+
 /// Migrate legacy store files once, then seed state. Called from setup.
-pub fn build_monitor_state() -> (MonitorState, PathBuf) {    let storage = UsageStorage::with_defaults();
+pub fn build_monitor_state() -> (MonitorState, PathBuf) {
+    let storage = UsageStorage::with_defaults();
     let auth = AuthFileService::with_defaults();
     let log_path = storage
         .storage_path
@@ -898,6 +1451,14 @@ pub fn build_monitor_state() -> (MonitorState, PathBuf) {    let storage = Usage
         .unwrap_or_else(|| PathBuf::from("."))
         .join("activity.log");
     boot_line(&log_path, "CodexMonitor started.");
+    let _ = crate::fsutil::ensure_private_dir(&auth.accounts_dir);
+    let repaired = auth.reconcile_backups();
+    if repaired > 0 {
+        boot_line(
+            &log_path,
+            &format!("Repaired {repaired} saved sign-in(s) stored under the wrong account."),
+        );
+    }
     let mut storage = storage;
     #[cfg(feature = "legacy-migrate")]
     {
@@ -936,6 +1497,7 @@ pub fn all_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool {
         check_auto_fetch,
         process_auth_file,
         switch_account,
+        codex_status,
         remove_account,
         set_archived,
         save_auto_fetch,
@@ -948,11 +1510,16 @@ pub fn all_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool {
         log_message,
         export_data,
         import_data,
+        import_auth_json,
+        import_auth_json_text,
         logout,
         login_start,
         login_cancel,
         open_login_url,
         restart_codex,
+        tray_show_main,
+        tray_hide,
+        app_quit,
     ]
 }
 
@@ -983,6 +1550,31 @@ mod real_store_tests {
     }
 
     #[test]
+    fn lifecycle_stages_follow_the_switch_log() {
+        assert_eq!(
+            stage_from_log("Switch: closing Codex before writing the new session."),
+            Some(LifecycleStage::Closing)
+        );
+        assert_eq!(
+            stage_from_log("Switch: Codex closed; writing the selected account."),
+            Some(LifecycleStage::Switching)
+        );
+        assert_eq!(
+            stage_from_log("Restart: launching resolved Codex bundle (attempt 1/3)."),
+            Some(LifecycleStage::Reopening)
+        );
+        assert_eq!(
+            stage_from_log("Restart: Codex main process is running; launch verified."),
+            Some(LifecycleStage::Reopened)
+        );
+        assert_eq!(
+            stage_from_log("Restart: resolved bundle /Applications/ChatGPT.app."),
+            None
+        );
+        assert_eq!(LifecycleStage::Closing.as_str(), "closing");
+    }
+
+    #[test]
     fn login_url_validation() {
         assert!(is_http_url("https://auth.openai.com/authorize?x=1"));
         assert!(is_http_url("http://localhost:1455/callback"));
@@ -990,5 +1582,83 @@ mod real_store_tests {
         assert!(!is_http_url("file:///etc/passwd"));
         assert!(!is_http_url(""));
         assert!(open_login_url("javascript:alert(1)".into()).is_err());
+    }
+
+    fn test_state(tag: &str) -> MonitorState {
+        let dir = std::env::temp_dir().join(format!("codex-commands-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        MonitorState::load(
+            UsageStorage::new(dir.join("u.v2.json"), dir.join("u.v2.meta.json")),
+            AuthFileService::new(dir.join("auth.json"), dir.join("accounts")),
+        )
+    }
+
+    fn usage(email: &str) -> UsageResponse {
+        serde_json::from_value(serde_json::json!({
+            "email": email,
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 10.0,
+                    "limit_window_seconds": 604800.0,
+                    "reset_at": 1_778_000_000.0
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn jwt_for(email: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let payload = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&serde_json::json!({"email": email})).unwrap());
+        format!("header.{payload}.signature")
+    }
+
+    #[test]
+    fn mismatched_fetch_does_not_mutate_usage_or_current() {
+        let mut st = test_state("mismatch");
+        st.apply_usage_response(&usage("a@x.y"), "jwt-a".into(), 1.0, true);
+        let before = st.usage.clone();
+        let error = apply_fetched(
+            &mut st,
+            FetchedData {
+                response: usage("b@x.y"),
+                credits: None,
+            },
+            "jwt-a",
+            Some("a@x.y"),
+            true,
+            2.0,
+        )
+        .unwrap_err();
+        assert!(error.contains("Account changed during fetch"));
+        assert_eq!(
+            st.usage, before,
+            "a rejected fetch must not add or update a row"
+        );
+        assert_eq!(st.current_email.as_deref(), Some("a@x.y"));
+        assert_eq!(st.latest_jwt_for(None).as_deref(), Some("jwt-a"));
+    }
+
+    #[test]
+    fn fetch_response_must_match_the_token_identity() {
+        let mut st = test_state("token-mismatch");
+        st.apply_usage_response(&usage("a@x.y"), "jwt-a".into(), 1.0, true);
+        let before = st.usage.clone();
+        let error = apply_fetched(
+            &mut st,
+            FetchedData {
+                response: usage("a@x.y"),
+                credits: None,
+            },
+            &jwt_for("b@x.y"),
+            None,
+            true,
+            2.0,
+        )
+        .unwrap_err();
+        assert!(error.contains("token belongs to b@x.y"));
+        assert_eq!(st.usage, before);
+        assert_eq!(st.current_email.as_deref(), Some("a@x.y"));
     }
 }

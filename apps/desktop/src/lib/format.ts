@@ -1,3 +1,5 @@
+import { quotaLeft } from "./quota";
+
 export interface RateLimitWindow {
   used_percent?: number;
   limit_window_seconds?: number;
@@ -39,8 +41,8 @@ export type UsageMap = Record<string, AccountUsage>;
  * Raw API values are kept in the store for debugging mismatches.
  */
 export function formatQuotaLeft(usedPercent?: number): string {
-  if (usedPercent === undefined || usedPercent === null || Number.isNaN(usedPercent)) return "-";
-  return `${Math.round(100 - usedPercent)}%`;
+  const left = quotaLeft(usedPercent);
+  return left === null ? "-" : `${left}%`;
 }
 
 function pad(n: number): string {
@@ -69,9 +71,74 @@ export function formatResetDisplay(resetTs: number | undefined, nowTs: number): 
   return `${stamp(resetTs)} (${countdown})`;
 }
 
+/**
+ * Human countdown, clamped at zero: `3d 9h 7m`, `4h 59m`, `27m`.
+ * No zero padding: `03:09:07` reads like a clock time, not a duration.
+ */
+export function formatResetCountdown(
+  resetTs: number | undefined,
+  nowTs: number,
+): string {
+  if (!resetTs) return "-";
+  return parts(Math.max(0, Math.floor(resetTs - nowTs)));
+}
+
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+/**
+ * Human reset stamp. Same calendar day reads as a clock time (`6:26 PM`),
+ * otherwise a short date (`18 Nov`), with the year only when it differs.
+ * Locale-independent so the menu bar never reflows between systems.
+ */
+export function formatResetStamp(
+  resetTs: number | undefined,
+  nowTs: number,
+): string {
+  if (!resetTs) return "-";
+  const d = new Date(resetTs * 1000);
+  const now = new Date(nowTs * 1000);
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) {
+    const hours = d.getHours();
+    const h12 = hours % 12 === 0 ? 12 : hours % 12;
+    return `${h12}:${pad(d.getMinutes())} ${hours < 12 ? "AM" : "PM"}`;
+  }
+  const date = `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return d.getFullYear() === now.getFullYear()
+    ? date
+    : `${date} ${d.getFullYear()}`;
+}
+
 export function countdownText(secs: number): string {
   if (secs <= 0) return "expired";
   return parts(secs);
+}
+
+export function formatAgo(ts: number | undefined, nowTs: number): string {
+  if (!ts) return "Never";
+  const diff = Math.max(0, Math.floor(nowTs - ts));
+  if (diff < 60) return "Just now";
+  const minutes = Math.floor(diff / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function parseIso(value?: string | null): number | undefined {

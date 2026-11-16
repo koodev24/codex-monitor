@@ -50,8 +50,7 @@ pub fn parse_iso_timestamp(value: Option<&str>) -> Option<f64> {
         "%Y-%m-%d %H:%M:%S",
     ] {
         if let Ok(naive) = NaiveDateTime::parse_from_str(&normalized, fmt) {
-            let utc: chrono::DateTime<Utc> =
-                Utc.from_local_datetime(&naive).single()?;
+            let utc: chrono::DateTime<Utc> = Utc.from_local_datetime(&naive).single()?;
             return Some(utc.timestamp_millis() as f64 / 1000.0);
         }
     }
@@ -121,9 +120,7 @@ pub fn format_reset_time_remaining(expires_at: Option<&str>, now_ts: f64) -> Str
 }
 
 /// Earliest-expiring available credit. Mirrors `soonest_expiring_credit`.
-pub fn soonest_expiring_credit(
-    payload: Option<&ResetCreditsPayload>,
-) -> Option<ResetCredit> {
+pub fn soonest_expiring_credit(payload: Option<&ResetCreditsPayload>) -> Option<ResetCredit> {
     let payload = payload?;
     let credits = payload.credits.as_ref()?;
     let mut available: Vec<&ResetCredit> = credits
@@ -223,7 +220,10 @@ mod tests {
         let now = parse_iso_timestamp(Some("2026-04-24T15:17:00Z")).unwrap();
         let s = format_reset_credit_expires(Some("2026-04-25T15:17:00Z"), now);
         assert!(s.contains("23h 59m") || s.contains("1d"), "got {s}");
-        assert_eq!(format_reset_time_remaining(Some("2026-04-24T15:17:00Z"), now), "expired");
+        assert_eq!(
+            format_reset_time_remaining(Some("2026-04-24T15:17:00Z"), now),
+            "expired"
+        );
         assert_eq!(format_reset_time_remaining(None, now), "-");
         assert_eq!(format_reset_credit_expires(Some("junk"), now), "-");
     }
@@ -241,7 +241,10 @@ mod tests {
         let soonest = soonest_expiring_credit(Some(&payload)).unwrap();
         assert_eq!(soonest.expires_at.as_deref(), Some("2026-04-26T00:00:00Z"));
         assert!(soonest_expiring_credit(None).is_none());
-        let empty = ResetCreditsPayload { credits: Some(vec![]), ..Default::default() };
+        let empty = ResetCreditsPayload {
+            credits: Some(vec![]),
+            ..Default::default()
+        };
         assert!(soonest_expiring_credit(Some(&empty)).is_none());
         let unparseable = ResetCreditsPayload {
             credits: Some(vec![credit("available", "junk")]),
