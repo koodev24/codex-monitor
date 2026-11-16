@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.5.1 - 2026-11-16
+
+### Fixed
+
+- Restore the Windows and Linux release builds. v2.5.0's release job stopped at Rust lints for macOS-only restart helpers, so only the macOS build was published; v2.5.1 ships all three platforms.
+
 ## v2.5.0 - 2026-11-16
 
 ### Added

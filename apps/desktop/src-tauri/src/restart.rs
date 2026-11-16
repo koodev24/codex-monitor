@@ -1,11 +1,15 @@
 //! Codex desktop lifecycle, independent of its display/executable name.
+#[cfg(any(target_os = "macos", test))]
 use std::path::Path;
+#[cfg(target_os = "macos")]
 use std::sync::Mutex;
+#[cfg(any(target_os = "macos", test))]
 use std::time::Duration;
 
 /// Serializes every operation that can close or relaunch Codex. The auth
 /// switch runs while this is held so two windows cannot interleave a close,
 /// a credential write, and a launch.
+#[cfg(target_os = "macos")]
 static LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 /// A snapshot of the Codex desktop used by the switch confirmation dialog.
@@ -27,18 +31,21 @@ pub struct SwitchOutcome {
     pub warning: Option<String>,
 }
 
+#[cfg(target_os = "macos")]
 fn lifecycle_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
     LIFECYCLE_LOCK
         .try_lock()
         .map_err(|_| "Another Codex restart or account switch is already running.".to_string())
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Debug, PartialEq)]
 struct Process {
     pid: u32,
     main: bool,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn bundle_processes(table: &str, bundle: &Path, executable: &Path) -> Vec<Process> {
     table
         .lines()
@@ -55,6 +62,7 @@ fn bundle_processes(table: &str, bundle: &Path, executable: &Path) -> Vec<Proces
         .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 trait Desktop {
     fn processes(&mut self) -> Result<Vec<Process>, String>;
     fn quit(&mut self) -> Result<(), String>;
@@ -64,6 +72,7 @@ trait Desktop {
     fn log(&mut self, message: &str);
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn wait_until_stopped(desktop: &mut impl Desktop, polls: usize) -> Result<bool, String> {
     for _ in 0..polls {
         if desktop.processes()?.is_empty() {
@@ -74,6 +83,7 @@ fn wait_until_stopped(desktop: &mut impl Desktop, polls: usize) -> Result<bool, 
     Ok(desktop.processes()?.is_empty())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn stop_remaining(desktop: &mut impl Desktop) -> Result<(), String> {
     if wait_until_stopped(desktop, 16)? {
         return Ok(());
@@ -91,6 +101,7 @@ fn stop_remaining(desktop: &mut impl Desktop) -> Result<(), String> {
     Err("Codex processes did not stop; reopen cancelled to avoid overlapping instances.".into())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn close(desktop: &mut impl Desktop) -> Result<(), String> {
     if let Err(error) = desktop.quit() {
         desktop.log(&format!(
@@ -100,6 +111,7 @@ fn close(desktop: &mut impl Desktop) -> Result<(), String> {
     stop_remaining(desktop)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn reopen(desktop: &mut impl Desktop) -> Result<(), String> {
     let mut last_error = "launch accepted, but Codex main process did not stay running".to_string();
     for attempt in 1..=3 {
@@ -144,6 +156,7 @@ fn reopen(desktop: &mut impl Desktop) -> Result<(), String> {
     ))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn restart(desktop: &mut impl Desktop) -> Result<(), String> {
     close(desktop)?;
     desktop.sleep(Duration::from_millis(500));
@@ -153,6 +166,7 @@ fn restart(desktop: &mut impl Desktop) -> Result<(), String> {
 /// Close Codex when needed, run the credential write, then reopen the exact
 /// bundle that was running. A reopen failure is reported as a warning because
 /// the switch itself already succeeded.
+#[cfg(any(target_os = "macos", test))]
 fn run_switch_sequence(
     desktop: &mut impl Desktop,
     switch: impl FnOnce() -> Result<(), String>,
