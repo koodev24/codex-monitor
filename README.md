@@ -45,15 +45,16 @@ If you still run the original Python build, just use its built-in updater: v2 re
 - **Account management** — add accounts via Codex login, archive the ones you don't use, and switch the active Codex account safely: Codex closes, fresh tokens are preserved, the selected session is written, and Codex reopens automatically.
 - **Menu-bar popover (macOS)** — the tray title shows the active account's 5-hour and weekly quota; click it for a compact account list, one-step switching, and dashboard access.
 - **Live logs** — a collapsible activity panel with one-click clear and status copy. It has a fixed height and cannot be resized.
+- **Settings** — menu bar visibility, desktop notifications, and automatic update checks, saved immediately.
 - **In-app updates** — signed update feed with manual check and automatic background checks.
 
 ## Usage
 
 1. Launch the app and click **Add account** to sign in through Codex login.
 2. Click **Refresh quota** (or wait for auto-fetch) to pull usage for the active account, or **Fetch all accounts** for every backup.
-3. Hover any toolbar button for what it does; click the **eye** to toggle archived accounts and the **sun/moon** for light/dark theme.
+3. Hover any toolbar button for what it does; click the **eye** to toggle archived accounts, the **sun/moon** for light/dark theme, and the **gear** for settings.
 4. Click **Activity** at the bottom to expand or collapse logs. Switching accounts asks once, then handles Codex close, credential switch, and reopen as a single action.
-5. On macOS, closing the window keeps Codex Monitor running in the menu bar. Use the tray popover to reopen the dashboard, or **Quit Codex Monitor** from its menu to exit.
+5. On macOS, closing the window keeps Codex Monitor running in the menu bar. Use the tray popover to reopen the dashboard, or **Quit Codex Monitor** from its menu to exit. If you turn off **Show menu bar item** in Settings, closing the window quits the app instead.
 
 ## How updating works
 

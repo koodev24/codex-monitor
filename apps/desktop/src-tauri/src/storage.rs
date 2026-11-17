@@ -171,6 +171,9 @@ pub(crate) fn sanitize_meta(meta: &Map<String, Value>) -> Meta {
         "show_archived",
         "show_5h_columns",
         "logs_expanded",
+        "show_menu_bar",
+        "notifications_enabled",
+        "auto_check_updates",
     ] {
         if let Some(v) = meta.get(key) {
             clean.insert(key.into(), Value::Bool(bool_of(v)));

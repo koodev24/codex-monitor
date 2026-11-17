@@ -23,6 +23,7 @@ import {
   Moon,
   RefreshCw,
   RotateCw,
+  Settings,
   ShieldCheck,
   Sun,
   Trash2,
@@ -81,6 +82,7 @@ import {
 } from "./lib/format";
 import { AddAccountDialog } from "./components/AddAccountDialog";
 import { QuotaMeter } from "./components/QuotaMeter";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { api, type CodexStatus } from "./lib/tauri";
 import { cn } from "./lib/utils";
 import { useAppDispatch, useAppSelector } from "./store/hooks";
@@ -121,6 +123,7 @@ import {
   setBusy,
   setConfirm,
   setResetsView,
+  setSettingsOpen,
   setStatus,
   setSwitchInfo,
 } from "./store/uiSlice";
@@ -527,6 +530,7 @@ export default function App() {
   const confirmBusy = useAppSelector(selectBusy("confirm"));
   const fetchAllBusy = useAppSelector(selectBusy("fetch:all"));
   const restartBusy = useAppSelector(selectBusy("restart-codex"));
+  const autoCheckUpdates = snap?.auto_check_updates ?? null;
   const { dark, toggle } = useTheme();
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [confirmStatus, setConfirmStatus] = useState<CodexStatus | null>(null);
@@ -711,13 +715,14 @@ export default function App() {
   }, [alwaysScrollToBottom, logs, logsOpen]);
 
   useEffect(() => {
+    if (autoCheckUpdates !== true) return;
     const t = window.setTimeout(() => void dispatch(checkUpdates(false)), 1500);
     const id = window.setInterval(() => void dispatch(checkUpdates(false)), 6 * 3600 * 1000);
     return () => {
       window.clearTimeout(t);
       window.clearInterval(id);
     };
-  }, [dispatch]);
+  }, [dispatch, autoCheckUpdates]);
 
   const rows = useMemo(() => {
     if (!snap) return [];
@@ -867,6 +872,9 @@ export default function App() {
             </Button>
             <IconBtn title="Toggle theme" onClick={toggle}>
               {dark ? <Sun /> : <Moon />}
+            </IconBtn>
+            <IconBtn title="Settings" onClick={() => dispatch(setSettingsOpen(true))}>
+              <Settings />
             </IconBtn>
           </div>
         </header>
@@ -1409,6 +1417,7 @@ export default function App() {
         </Dialog>
 
         <AddAccountDialog />
+        <SettingsDialog />
       </div>
     </TooltipProvider>
   );

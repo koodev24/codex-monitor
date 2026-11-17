@@ -74,14 +74,28 @@ pub fn run() {
                 let handle = app.handle().clone();
                 win.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        // The menu bar item is the only way back into a hidden
+                        // window. Without it, closing must quit instead of
+                        // leaving an unreachable background process.
+                        let show_menu_bar = commands::menu_bar_enabled(&handle);
                         api.prevent_close();
-                        if let Some(win) = handle.get_webview_window("main") {
-                            let _ = win.hide();
+                        if show_menu_bar {
+                            if let Some(win) = handle.get_webview_window("main") {
+                                let _ = win.hide();
+                            }
+                        } else {
+                            handle.exit(0);
                         }
                     }
                 });
             }
             crate::tray::setup(app.handle())?;
+            let show_menu_bar = commands::menu_bar_enabled(app.handle());
+            if !show_menu_bar {
+                if let Err(e) = crate::tray::set_visible(app.handle(), false) {
+                    eprintln!("menu bar visibility failed: {e}");
+                }
+            }
             let handle = app.handle().clone();
             let auth = crate::auth::AuthFileService::with_defaults();
             let watch_dir = auth

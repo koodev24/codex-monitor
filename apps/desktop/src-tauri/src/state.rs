@@ -119,6 +119,9 @@ pub struct MonitorState {
     pub sort_asc: bool,
     pub show_archived: bool,
     pub logs_expanded: bool,
+    pub show_menu_bar: bool,
+    pub notifications_enabled: bool,
+    pub auto_check_updates: bool,
     pub last_signature: Option<(u64, i128)>,
     pub last_access_token: Option<String>,
     pub last_refresh_marker: Option<String>,
@@ -176,6 +179,15 @@ impl MonitorState {
             logs_expanded: get("logs_expanded")
                 .map(|v| v == Value::Bool(true))
                 .unwrap_or(false),
+            show_menu_bar: get("show_menu_bar")
+                .map(|v| v != Value::Bool(false))
+                .unwrap_or(true),
+            notifications_enabled: get("notifications_enabled")
+                .map(|v| v != Value::Bool(false))
+                .unwrap_or(true),
+            auto_check_updates: get("auto_check_updates")
+                .map(|v| v != Value::Bool(false))
+                .unwrap_or(true),
             last_signature: None,
             last_access_token: None,
             last_refresh_marker: None,
@@ -226,6 +238,27 @@ impl MonitorState {
         self.logs_expanded = expanded;
         self.storage
             .set_meta_value("logs_expanded", Some(Value::Bool(expanded)));
+        self.persist();
+    }
+
+    pub fn save_show_menu_bar(&mut self, show: bool) {
+        self.show_menu_bar = show;
+        self.storage
+            .set_meta_value("show_menu_bar", Some(Value::Bool(show)));
+        self.persist();
+    }
+
+    pub fn save_notifications_enabled(&mut self, enabled: bool) {
+        self.notifications_enabled = enabled;
+        self.storage
+            .set_meta_value("notifications_enabled", Some(Value::Bool(enabled)));
+        self.persist();
+    }
+
+    pub fn save_auto_check_updates(&mut self, enabled: bool) {
+        self.auto_check_updates = enabled;
+        self.storage
+            .set_meta_value("auto_check_updates", Some(Value::Bool(enabled)));
         self.persist();
     }
 
@@ -597,5 +630,30 @@ mod tests {
         assert_eq!(st.due_auto_fetch_email(5000.0).as_deref(), Some("u@x.y"));
         assert!(st.remove_account("u@x.y"));
         assert!(!st.remove_account("u@x.y"));
+    }
+
+    #[test]
+    fn interface_preferences_default_to_enabled_and_persist() {
+        let mut st = blank_state();
+        assert!(st.show_menu_bar);
+        assert!(st.notifications_enabled);
+        assert!(st.auto_check_updates);
+
+        st.save_show_menu_bar(false);
+        st.save_notifications_enabled(false);
+        st.save_auto_check_updates(false);
+
+        let storage_path = st.storage.storage_path.clone();
+        let meta_path = st.storage.meta_path.clone();
+        let reloaded = MonitorState::load(
+            UsageStorage::new(storage_path.clone(), meta_path),
+            AuthFileService::new(
+                storage_path.with_file_name("auth.json"),
+                storage_path.with_file_name("accounts"),
+            ),
+        );
+        assert!(!reloaded.show_menu_bar);
+        assert!(!reloaded.notifications_enabled);
+        assert!(!reloaded.auto_check_updates);
     }
 }

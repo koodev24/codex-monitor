@@ -57,6 +57,19 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Show or hide the menu-bar item. Hiding also dismisses the popover so no
+/// orphaned window is left behind when the item disappears.
+pub fn set_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
+    if !visible {
+        hide_popover(app);
+    }
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return Err("Menu bar item is unavailable.".into());
+    };
+    tray.set_visible(visible)
+        .map_err(|e| format!("Menu bar item update failed: {e}"))
+}
+
 /// Update the menu-bar text with the active account's remaining quota for both
 /// windows. Called from `get_snapshot`, which the UI polls, so the title stays
 /// live.
@@ -353,6 +366,9 @@ mod tests {
             sort_asc: true,
             show_archived: false,
             logs_expanded: false,
+            show_menu_bar: true,
+            notifications_enabled: true,
+            auto_check_updates: true,
             auth_file_exists: true,
             backup_emails: vec![],
             app_version: "test".into(),

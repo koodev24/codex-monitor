@@ -10,6 +10,9 @@ export interface Snapshot {
   sort_asc: boolean;
   show_archived: boolean;
   logs_expanded: boolean;
+  show_menu_bar: boolean;
+  notifications_enabled: boolean;
+  auto_check_updates: boolean;
   auth_file_exists: boolean;
   backup_emails: string[];
   app_version: string;
@@ -72,6 +75,11 @@ export const api = {
     invoke<void>("save_sort", { column, asc }),
   saveShowArchived: (show: boolean) => invoke<void>("save_show_archived", { show }),
   saveLogsExpanded: (expanded: boolean) => invoke<void>("save_logs_expanded", { expanded }),
+  saveShowMenuBar: (show: boolean) => invoke<string>("save_show_menu_bar", { show }),
+  saveNotificationsEnabled: (enabled: boolean) =>
+    invoke<void>("save_notifications_enabled", { enabled }),
+  saveAutoCheckUpdates: (enabled: boolean) =>
+    invoke<void>("save_auto_check_updates", { enabled }),
   resets: (email: string) => invoke<ResetCreditsPayload | null>("get_resets", { email }),
   logs: () => invoke<string[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),

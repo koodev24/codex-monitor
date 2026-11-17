@@ -84,9 +84,11 @@ export const pollOnce = createAsyncThunk<void, void, { state: RootState }>(
         dispatch(setAuthRetries(0));
         if (o.kind === "AuthRefreshed") {
           dispatch(setStatus(o.message));
-          try {
-            sendNotification({ title: "Codex Account Monitor", body: o.message });
-          } catch {
+          if (getState().snapshot.snap?.notifications_enabled !== false) {
+            try {
+              sendNotification({ title: "Codex Account Monitor", body: o.message });
+            } catch {
+            }
           }
         } else if (o.kind === "Fetched" || o.kind === "LoggedOut") {
           dispatch(setStatus(o.message));
@@ -316,6 +318,33 @@ export const toggleArchivedVisibility = createAsyncThunk<void, void, { state: Ro
       await dispatch(loadSnapshot());
     } catch (e) {
       dispatch(setStatus(`Toggle failed: ${e}`));
+    }
+  },
+);
+
+export type SettingsPatch = Partial<
+  Pick<Snapshot, "show_menu_bar" | "notifications_enabled" | "auto_check_updates">
+>;
+
+export const saveSettings = createAsyncThunk<void, SettingsPatch, { state: RootState }>(
+  "snapshot/settings",
+  async (patch, { dispatch }) => {
+    dispatch(setBusy({ key: "settings", on: true }));
+    try {
+      if (patch.show_menu_bar !== undefined) {
+        dispatch(setStatus(await api.saveShowMenuBar(patch.show_menu_bar)));
+      }
+      if (patch.notifications_enabled !== undefined) {
+        await api.saveNotificationsEnabled(patch.notifications_enabled);
+      }
+      if (patch.auto_check_updates !== undefined) {
+        await api.saveAutoCheckUpdates(patch.auto_check_updates);
+      }
+    } catch (e) {
+      dispatch(setStatus(`Settings update failed: ${e}`));
+    } finally {
+      await dispatch(loadSnapshot());
+      dispatch(setBusy({ key: "settings", on: false }));
     }
   },
 );

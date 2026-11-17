@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.5.2 - 2026-11-17
+
+### Added
+
+- A Settings dialog with an on/off switch for the macOS menu-bar item. The choice persists across launches.
+- Desktop-notification and automatic-update-check switches, so background behaviour can be disabled without editing files.
+
+### Changed
+
+- Closing the main window now quits Codex Monitor when the menu bar item is turned off, instead of leaving a hidden process with no way to reopen it.
+- Automatic update checks are skipped entirely when the setting is off; manual checks still work.
+
 ## v2.5.1 - 2026-11-16
 
 ### Fixed

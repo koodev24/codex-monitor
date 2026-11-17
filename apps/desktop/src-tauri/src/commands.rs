@@ -40,6 +40,9 @@ pub struct Snapshot {
     pub sort_asc: bool,
     pub show_archived: bool,
     pub logs_expanded: bool,
+    pub show_menu_bar: bool,
+    pub notifications_enabled: bool,
+    pub auto_check_updates: bool,
     pub auth_file_exists: bool,
     pub backup_emails: Vec<String>,
     pub app_version: String,
@@ -165,6 +168,16 @@ fn state_lock<'a>(state: &'a State<AppState>) -> std::sync::MutexGuard<'a, Monit
     state.inner.lock().unwrap()
 }
 
+/// Current menu-bar preference. A poisoned lock is treated as "off" so a
+/// window close can never hide the app behind a missing tray item.
+pub fn menu_bar_enabled(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .inner
+        .lock()
+        .map(|st| st.show_menu_bar)
+        .unwrap_or(false)
+}
+
 /// Network half of a quota fetch: usage + reset credits. Holds NO locks —
 /// callers must gather inputs first and apply afterwards, otherwise every
 /// other command queues behind the mutex and the UI freezes.
@@ -281,6 +294,9 @@ pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
             sort_asc: st.sort_asc,
             show_archived: st.show_archived,
             logs_expanded: st.logs_expanded,
+            show_menu_bar: st.show_menu_bar,
+            notifications_enabled: st.notifications_enabled,
+            auto_check_updates: st.auto_check_updates,
             auth_file_exists: st.auth.auth_file_exists(),
             backup_emails: st.auth.list_backup_emails(),
             app_version: app.package_info().version.to_string(),
@@ -906,6 +922,35 @@ pub fn save_logs_expanded(state: State<AppState>, expanded: bool) -> Result<(), 
 }
 
 #[tauri::command]
+pub fn save_show_menu_bar(
+    app: AppHandle,
+    state: State<AppState>,
+    show: bool,
+) -> Result<String, String> {
+    crate::tray::set_visible(&app, show)?;
+    state_lock(&state).save_show_menu_bar(show);
+    let message = if show {
+        "Menu bar item shown."
+    } else {
+        "Menu bar item hidden. Closing the window now quits Codex Monitor."
+    };
+    append_log(&state, message);
+    Ok(message.into())
+}
+
+#[tauri::command]
+pub fn save_notifications_enabled(state: State<AppState>, enabled: bool) -> Result<(), String> {
+    state_lock(&state).save_notifications_enabled(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_auto_check_updates(state: State<AppState>, enabled: bool) -> Result<(), String> {
+    state_lock(&state).save_auto_check_updates(enabled);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn get_resets(state: State<AppState>, email: String) -> Option<ResetCreditsPayload> {
     state_lock(&state)
         .usage
@@ -1504,6 +1549,9 @@ pub fn all_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool {
         save_sort,
         save_show_archived,
         save_logs_expanded,
+        save_show_menu_bar,
+        save_notifications_enabled,
+        save_auto_check_updates,
         get_resets,
         get_logs,
         clear_logs,
@@ -1541,6 +1589,9 @@ mod real_store_tests {
             sort_asc: st.sort_asc,
             show_archived: st.show_archived,
             logs_expanded: st.logs_expanded,
+            show_menu_bar: st.show_menu_bar,
+            notifications_enabled: st.notifications_enabled,
+            auto_check_updates: st.auto_check_updates,
             auth_file_exists: st.auth.auth_file_exists(),
             backup_emails: st.auth.list_backup_emails(),
             app_version: "test".into(),

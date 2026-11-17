@@ -51,6 +51,7 @@ interface UiState {
   resetsEmail: string | null;
   resets: ResetCreditsPayload | null;
   switchInfo: SwitchResult | null;
+  settingsOpen: boolean;
 }
 
 const initialState: UiState = {
@@ -63,6 +64,7 @@ const initialState: UiState = {
   resetsEmail: null,
   resets: null,
   switchInfo: null,
+  settingsOpen: false,
 };
 
 export const checkUpdates = createAsyncThunk<void, boolean, { state: RootState }>(
@@ -194,6 +196,9 @@ const uiSlice = createSlice({
     setSwitchInfo(state, action: PayloadAction<SwitchResult | null>) {
       state.switchInfo = action.payload;
     },
+    setSettingsOpen(state, action: PayloadAction<boolean>) {
+      state.settingsOpen = action.payload;
+    },
   },
 });
 
@@ -206,6 +211,7 @@ export const {
   setConfirm,
   setResetsView,
   setSwitchInfo,
+  setSettingsOpen,
 } = uiSlice.actions;
 
 export const selectBusy = (key: string) => (s: RootState) => !!s.ui.busy[key];
