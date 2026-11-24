@@ -150,6 +150,11 @@ async function main() {
   const renamed = await listAssets();
   const finalByName = new Map(renamed.map((asset) => [asset.name, asset]));
 
+  const installers = [
+    `CodexMonitor-${version}-macos-arm64.dmg`,
+    `CodexMonitor-${version}-macos-x64.dmg`,
+  ];
+
   const platformEntries = {};
   for (const [platform, assetName] of Object.entries(platforms)) {
     const asset = finalByName.get(assetName);
@@ -195,10 +200,6 @@ async function main() {
 
   // Remove bundle leftovers such as an unversioned compatibility zip or
   // arch-less updater archive. Only canonical assets stay public.
-  const installers = [
-    `CodexMonitor-${version}-macos-arm64.dmg`,
-    `CodexMonitor-${version}-macos-x64.dmg`,
-  ];
   const expected = new Set([
     "latest.json",
     ...installers,
