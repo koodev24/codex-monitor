@@ -9,6 +9,10 @@ const repo = process.env.GITHUB_REPOSITORY ?? "";
 const token = process.env.GITHUB_TOKEN ?? "";
 const releaseId = process.env.RELEASE_ID ?? "";
 const apiBase = process.env.GITHUB_API_URL ?? "https://api.github.com";
+const uploadsBase =
+  apiBase === "https://api.github.com"
+    ? "https://uploads.github.com"
+    : apiBase.replace(/\/api\/v3$/, "/api/uploads");
 
 if (!tag || !repo || !token || !releaseId) {
   console.error("finalize-release: TAG, GITHUB_REPOSITORY, GITHUB_TOKEN, RELEASE_ID required");
@@ -168,7 +172,7 @@ async function main() {
   const oldLatest = finalByName.get("latest.json");
   if (oldLatest) await deleteAsset(oldLatest.id);
 
-  const uploadUrl = `${apiBase}/repos/${repo}/releases/${releaseId}/assets?name=latest.json`;
+  const uploadUrl = `${uploadsBase}/repos/${repo}/releases/${releaseId}/assets?name=latest.json`;
   const uploaded = await fetch(uploadUrl, {
     method: "POST",
     headers: {
