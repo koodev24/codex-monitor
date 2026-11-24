@@ -1,3 +1,4 @@
+import { translate, type Locale } from "@/i18n/messages";
 import { quotaLeft } from "./quota";
 
 export interface RateLimitWindow {
@@ -49,26 +50,40 @@ function pad(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-function stamp(ts: number): string {
+function stamp(ts: number, locale: Locale = "en"): string {
   const d = new Date(ts * 1000);
+  if (locale !== "en") {
+    return new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(d);
+  }
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function parts(diffSecs: number): string {
+function parts(diffSecs: number, locale: Locale = "en"): string {
   const days = Math.floor(diffSecs / 86400);
   const hours = Math.floor((diffSecs % 86400) / 3600);
   const minutes = Math.floor((diffSecs % 3600) / 60);
   const out: string[] = [];
-  if (days > 0) out.push(`${days}d`);
-  if (hours > 0) out.push(`${hours}h`);
-  out.push(`${minutes}m`);
+  if (days > 0) out.push(translate(locale, "time.daysShort", { count: days }));
+  if (hours > 0) out.push(translate(locale, "time.hoursShort", { count: hours }));
+  out.push(translate(locale, "time.minutesShort", { count: minutes }));
   return out.join(" ");
 }
 
-export function formatResetDisplay(resetTs: number | undefined, nowTs: number): string {
+export function formatResetDisplay(
+  resetTs: number | undefined,
+  nowTs: number,
+  locale: Locale = "en",
+): string {
   if (!resetTs) return "-";
-  const countdown = nowTs >= resetTs ? "0m" : parts(Math.floor(resetTs - nowTs));
-  return `${stamp(resetTs)} (${countdown})`;
+  const countdown =
+    nowTs >= resetTs ? parts(0, locale) : parts(Math.floor(resetTs - nowTs), locale);
+  return `${stamp(resetTs, locale)} (${countdown})`;
 }
 
 /**
@@ -78,9 +93,10 @@ export function formatResetDisplay(resetTs: number | undefined, nowTs: number): 
 export function formatResetCountdown(
   resetTs: number | undefined,
   nowTs: number,
+  locale: Locale = "en",
 ): string {
   if (!resetTs) return "-";
-  return parts(Math.max(0, Math.floor(resetTs - nowTs)));
+  return parts(Math.max(0, Math.floor(resetTs - nowTs)), locale);
 }
 
 const MONTHS = [
@@ -101,11 +117,12 @@ const MONTHS = [
 /**
  * Human reset stamp. Same calendar day reads as a clock time (`6:26 PM`),
  * otherwise a short date (`18 Nov`), with the year only when it differs.
- * Locale-independent so the menu bar never reflows between systems.
+ * English keeps the fixed compact shape; other locales use Intl.
  */
 export function formatResetStamp(
   resetTs: number | undefined,
   nowTs: number,
+  locale: Locale = "en",
 ): string {
   if (!resetTs) return "-";
   const d = new Date(resetTs * 1000);
@@ -114,6 +131,19 @@ export function formatResetStamp(
     d.getFullYear() === now.getFullYear() &&
     d.getMonth() === now.getMonth() &&
     d.getDate() === now.getDate();
+  if (locale !== "en") {
+    if (sameDay) {
+      return new Intl.DateTimeFormat(locale, {
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(d);
+    }
+    return new Intl.DateTimeFormat(locale, {
+      day: "numeric",
+      month: "short",
+      year: d.getFullYear() === now.getFullYear() ? undefined : "numeric",
+    }).format(d);
+  }
   if (sameDay) {
     const hours = d.getHours();
     const h12 = hours % 12 === 0 ? 12 : hours % 12;
@@ -125,20 +155,24 @@ export function formatResetStamp(
     : `${date} ${d.getFullYear()}`;
 }
 
-export function countdownText(secs: number): string {
-  if (secs <= 0) return "expired";
-  return parts(secs);
+export function countdownText(secs: number, locale: Locale = "en"): string {
+  if (secs <= 0) return translate(locale, "time.expired");
+  return parts(secs, locale);
 }
 
-export function formatAgo(ts: number | undefined, nowTs: number): string {
-  if (!ts) return "Never";
+export function formatAgo(
+  ts: number | undefined,
+  nowTs: number,
+  locale: Locale = "en",
+): string {
+  if (!ts) return translate(locale, "common.never");
   const diff = Math.max(0, Math.floor(nowTs - ts));
-  if (diff < 60) return "Just now";
+  if (diff < 60) return translate(locale, "time.justNow");
   const minutes = Math.floor(diff / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return translate(locale, "time.minutesAgo", { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  if (hours < 24) return translate(locale, "time.hoursAgo", { count: hours });
+  return translate(locale, "time.daysAgo", { count: Math.floor(hours / 24) });
 }
 
 export function parseIso(value?: string | null): number | undefined {
@@ -148,21 +182,29 @@ export function parseIso(value?: string | null): number | undefined {
   return ms / 1000;
 }
 
-export function formatGrantedAt(grantedAt?: string): string {
+export function formatGrantedAt(grantedAt?: string, locale: Locale = "en"): string {
   const ts = parseIso(grantedAt);
-  return ts === undefined ? "-" : stamp(ts);
+  return ts === undefined ? "-" : stamp(ts, locale);
 }
 
-export function formatCreditExpires(expiresAt: string | undefined, nowTs: number): string {
+export function formatCreditExpires(
+  expiresAt: string | undefined,
+  nowTs: number,
+  locale: Locale = "en",
+): string {
   const ts = parseIso(expiresAt);
   if (ts === undefined) return "-";
-  return `${stamp(ts)} (${countdownText(Math.floor(ts - nowTs))})`;
+  return `${stamp(ts, locale)} (${countdownText(Math.floor(ts - nowTs), locale)})`;
 }
 
-export function formatTimeRemaining(expiresAt: string | undefined, nowTs: number): string {
+export function formatTimeRemaining(
+  expiresAt: string | undefined,
+  nowTs: number,
+  locale: Locale = "en",
+): string {
   const ts = parseIso(expiresAt);
   if (ts === undefined) return "-";
-  return countdownText(Math.floor(ts - nowTs));
+  return countdownText(Math.floor(ts - nowTs), locale);
 }
 
 export function soonestExpiringCredit(

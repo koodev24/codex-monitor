@@ -83,6 +83,7 @@ import {
 import { AddAccountDialog } from "./components/AddAccountDialog";
 import { QuotaMeter } from "./components/QuotaMeter";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { I18nProvider, resolveLocale, useI18n, useT } from "./i18n";
 import { api, type CodexStatus } from "./lib/tauri";
 import { cn } from "./lib/utils";
 import { useAppDispatch, useAppSelector } from "./store/hooks";
@@ -180,7 +181,9 @@ function IconBtn({
   pressed?: boolean;
   children: React.ReactNode;
 }) {
+  const { t } = useI18n();
   const busy = useAppSelector((s) => (busyKey ? !!s.ui.busy[busyKey] : false));
+  const label = busy ? `${title} · ${t("common.working")}` : title;
   return (
     <Tooltip>
       <TooltipTrigger
@@ -190,14 +193,14 @@ function IconBtn({
             size="icon-sm"
             onClick={onClick}
             disabled={busy}
-            aria-label={busy ? `${title} (working…)` : title}
+            aria-label={label}
             aria-pressed={pressed}
           >
             {busy ? <Spin /> : children}
           </Button>
         }
       />
-      <TooltipContent>{busy ? `${title} (working…)` : title}</TooltipContent>
+      <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
 }
@@ -226,29 +229,33 @@ function SwitchPlan({
   stage: string | null;
   busy: boolean;
 }) {
+  const { t } = useI18n();
   const steps = running
     ? [
         {
           key: "closing",
-          title: "Close Codex",
-          detail: `${processCount} running process${processCount === 1 ? " quits" : "es quit"} cleanly, helpers included.`,
+          title: t("switch.planCloseTitle"),
+          detail:
+            processCount === 1
+              ? t("switch.planCloseDetailOne")
+              : t("switch.planCloseDetailMany", { count: processCount }),
         },
         {
           key: "switching",
-          title: "Write the saved session",
-          detail: "The chosen account becomes the active Codex sign-in.",
+          title: t("switch.planWriteTitle"),
+          detail: t("switch.planWriteDetailRunning"),
         },
         {
           key: "reopening",
-          title: "Reopen Codex",
-          detail: "The same app bundle starts again on the new account.",
+          title: t("switch.planReopenTitle"),
+          detail: t("switch.planReopenDetail"),
         },
       ]
     : [
         {
           key: "switching",
-          title: "Write the saved session",
-          detail: "Codex is closed, so the switch applies now and on the next launch.",
+          title: t("switch.planWriteTitle"),
+          detail: t("switch.planWriteDetailClosed"),
         },
       ];
   const done = stage === "done" || stage === "reopened";
@@ -381,23 +388,26 @@ function AccountRow({
   onArchive: () => void;
   onRemove: () => void;
 }) {
+  const { t, locale } = useI18n();
   const weekly = weeklyOf(account);
   const weeklyUsed = usedOf(account);
   const weeklyLeft = formatQuotaLeft(weeklyUsed);
   const hasShort = hasShortWindow(account);
   const shortLeft = formatQuotaLeft(account.short_window?.used_percent);
-  const shortReset = formatResetDisplay(shortResetTsOf(account), now);
+  const shortReset = formatResetDisplay(shortResetTsOf(account), now, locale);
   const lastFetch =
     account.last_fetched === undefined
-      ? "Never"
-      : new Date(account.last_fetched * 1000).toLocaleString([], {
+      ? t("common.never")
+      : new Date(account.last_fetched * 1000).toLocaleString(locale, {
           month: "short",
           day: "numeric",
           hour: "2-digit",
           minute: "2-digit",
         });
   const lastFetchAgo =
-    account.last_fetched === undefined ? "Never" : formatAgo(account.last_fetched, now);
+    account.last_fetched === undefined
+      ? t("common.never")
+      : formatAgo(account.last_fetched, now, locale);
 
   return (
     <div
@@ -420,21 +430,21 @@ function AccountRow({
             />
             <TooltipContent>{email}</TooltipContent>
           </Tooltip>
-          <IconBtn title="Copy email" onClick={onCopy}>
+          <IconBtn title={t("account.copyEmail")} onClick={onCopy}>
             <Copy />
           </IconBtn>
           {current && (
             <Badge variant="outline" className="border-primary/30 bg-primary/5 text-primary">
-              Active
+              {t("account.active")}
             </Badge>
           )}
-          {account.archived && <Badge variant="secondary">Archived</Badge>}
+          {account.archived && <Badge variant="secondary">{t("account.archived")}</Badge>}
           {failed && (
             <Tooltip>
               <TooltipTrigger
                 render={
                   <Badge variant="destructive" tabIndex={0}>
-                    Re-auth
+                    {t("account.reAuth")}
                   </Badge>
                 }
               />
@@ -463,43 +473,53 @@ function AccountRow({
       <div className="flex items-center gap-3">
         <div className="grid min-w-0 flex-1 grid-cols-3 gap-2 lg:w-72 lg:flex-none">
           <Stat
-            label="Weekly"
+            label={t("stat.weekly")}
             value={weeklyLeft}
-            title={weekly ? `Used ${weekly.used_percent ?? "?"}%` : "Fetch quota first"}
+            title={
+              weekly
+                ? t("stat.usedPercent", { percent: weekly.used_percent ?? "?" })
+                : t("stat.fetchFirst")
+            }
           />
           <Stat
-            label="5-hour"
+            label={t("stat.fiveHour")}
             value={hasShort ? shortLeft : "—"}
-            title={hasShort ? shortReset : "No short window reported"}
+            title={hasShort ? shortReset : t("stat.noShortWindow")}
           />
-          <Stat label="Fetched" value={lastFetchAgo} title={lastFetch} />
+          <Stat label={t("stat.fetched")} value={lastFetchAgo} title={lastFetch} />
         </div>
 
         <div className="flex shrink-0 items-center justify-end gap-0.5">
           {(current || !failed) && (
             <IconBtn
-              title={current ? "Fetch quota" : "Fetch this backup account"}
+              title={
+                current ? t("action.fetchQuota") : t("action.fetchBackup")
+              }
               busyKey={current ? "fetch:all" : `fetch:${email}`}
               onClick={onFetch}
             >
               <RefreshCw />
             </IconBtn>
           )}
-          <IconBtn title="Reset credits" busyKey={`resets:${email}`} onClick={onResets}>
+          <IconBtn
+            title={t("action.resetCredits")}
+            busyKey={`resets:${email}`}
+            onClick={onResets}
+          >
             <Coins />
           </IconBtn>
           {!current && (
-            <IconBtn title="Switch to this account" onClick={onSwitch}>
+            <IconBtn title={t("action.switchTo")} onClick={onSwitch}>
               <ArrowLeftRight />
             </IconBtn>
           )}
           <IconBtn
-            title={account.archived ? "Unarchive account" : "Archive account"}
+            title={account.archived ? t("action.unarchive") : t("action.archive")}
             onClick={onArchive}
           >
             {account.archived ? <ArchiveRestore /> : <Archive />}
           </IconBtn>
-          <IconBtn title="Remove account" onClick={onRemove}>
+          <IconBtn title={t("action.remove")} onClick={onRemove}>
             <Trash2 />
           </IconBtn>
         </div>
@@ -511,6 +531,8 @@ function AccountRow({
 export default function App() {
   const dispatch = useAppDispatch();
   const snap = useAppSelector((s) => s.snapshot.snap);
+  const t = useT(snap?.locale);
+  const locale = resolveLocale(snap?.locale);
   const initialized = useAppSelector((s) => s.snapshot.initialized);
   const loadError = useAppSelector((s) => s.snapshot.loadError);
   const sortKey = useAppSelector((s) => s.snapshot.sortKey);
@@ -547,12 +569,8 @@ export default function App() {
 
   useEffect(() => {
     if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
-      dispatch(
-        setLoadError(
-          "Not running inside Tauri (no backend bridge). Run `npm run tauri dev`, not `npm run dev`.",
-        ),
-      );
-      dispatch(setStatus("Not running inside Tauri."));
+      dispatch(setLoadError(t("status.notTauri")));
+      dispatch(setStatus(t("status.notTauriShort")));
       return;
     }
     void dispatch(loadSnapshot()).then(() => {
@@ -592,7 +610,7 @@ export default function App() {
             dispatch(markUrlOpened());
             dispatch(setUrl(e.payload));
             dispatch(setLoginError(null));
-            dispatch(setStatus("Login page ready — copy the URL or open it below."));
+            dispatch(setStatus(t("status.loginReady")));
           }
         });
       }),
@@ -617,7 +635,7 @@ export default function App() {
       window.clearInterval(id);
       unlisteners.forEach((u) => u());
     };
-  }, [dispatch]);
+  }, [dispatch, t]);
 
   useEffect(() => {
     if (confirm?.kind !== "switch") setSwitchStage(null);
@@ -764,9 +782,9 @@ export default function App() {
   async function copyAccountEmail(email: string) {
     try {
       await navigator.clipboard.writeText(email);
-      dispatch(setStatus(`Copied ${email}.`));
+      dispatch(setStatus(t("status.copiedEmail", { email })));
     } catch {
-      dispatch(setStatus("Could not copy the email."));
+      dispatch(setStatus(t("status.copyEmailFailed")));
     }
   }
 
@@ -779,7 +797,7 @@ export default function App() {
 
   function restartCodexNow() {
     dispatch(setBusy({ key: "restart-codex", on: true }));
-    dispatch(setStatus("Restarting Codex…"));
+    dispatch(setStatus(t("status.restarting")));
     void api
       .restartCodex()
       .then((message) => {
@@ -787,7 +805,7 @@ export default function App() {
         void dispatch(refreshLogs());
       })
       .catch((e) => {
-        dispatch(setStatus(`Restart failed: ${e}`));
+        dispatch(setStatus(t("status.restartFailed", { error: `${e}` })));
         void dispatch(refreshLogs());
       })
       .finally(() => {
@@ -807,38 +825,43 @@ export default function App() {
   const activeUsed = active ? usedOf(active) : undefined;
   const activeLastFetch =
     active?.last_fetched === undefined
-      ? "Never"
-      : new Date(active.last_fetched * 1000).toLocaleString([], {
+      ? t("common.never")
+      : new Date(active.last_fetched * 1000).toLocaleString(locale, {
           month: "short",
           day: "numeric",
           hour: "2-digit",
           minute: "2-digit",
         });
   const activeLastFetchAgo =
-    active?.last_fetched === undefined ? "Never" : formatAgo(active.last_fetched, now);
+    active?.last_fetched === undefined
+      ? t("common.never")
+      : formatAgo(active.last_fetched, now, locale);
   const codexLabel = !codexStatus
-    ? "Checking Codex…"
+    ? t("codex.checking")
     : !codexStatus.supported
-      ? "Lifecycle unavailable"
+      ? t("codex.lifecycleUnavailable")
       : !codexStatus.installed
-        ? "Codex not installed"
+        ? t("codex.notInstalled")
         : codexStatus.running
-          ? `Codex running${codexStatus.process_count > 1 ? ` · ${codexStatus.process_count} processes` : ""}`
-          : "Codex closed";
+          ? codexStatus.process_count > 1
+            ? t("codex.runningWithCount", { count: codexStatus.process_count })
+            : t("codex.running")
+          : t("codex.closed");
   const switchStatusText = !confirmStatus
-    ? "Checking whether Codex is running…"
+    ? t("switch.checking")
     : !confirmStatus.supported
-      ? "Codex lifecycle control is unavailable here. Only the active auth file will change."
+      ? t("switch.lifecycleUnavailable")
       : !confirmStatus.installed
-        ? "Codex desktop was not found. Only the active auth file will change."
+        ? t("switch.notFound")
         : confirmStatus.running
-          ? `Codex is running (${confirmStatus.process_count} process${
-              confirmStatus.process_count === 1 ? "" : "es"
-            }). It will close, switch, then reopen automatically.`
-          : "Codex isn't running. The switch applies now and the next launch uses this account.";
+          ? confirmStatus.process_count === 1
+            ? t("switch.runningOne")
+            : t("switch.runningMany", { count: confirmStatus.process_count })
+          : t("switch.notRunning");
 
   return (
-    <TooltipProvider>
+    <I18nProvider preference={snap?.locale}>
+      <TooltipProvider>
       <div className="flex h-screen flex-col bg-background text-foreground">
         <header className="relative z-20 flex h-14 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-xl">
           <span className="grid size-8 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
@@ -846,7 +869,7 @@ export default function App() {
           </span>
           <div className="min-w-0">
             <p className="truncate text-xs font-medium">
-              {activeEmail ?? "No active session"}
+              {activeEmail ?? t("app.noActiveSession")}
             </p>
             <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <StatusDot active={!!codexStatus?.running} />
@@ -855,7 +878,7 @@ export default function App() {
           </div>
           <div className="ml-auto flex items-center gap-1.5">
             <IconBtn
-              title="Fetch all accounts"
+              title={t("app.fetchAllAccounts")}
               busyKey="fetch:all-accounts"
               onClick={() => void dispatch(fetchAllAccounts())}
             >
@@ -868,12 +891,15 @@ export default function App() {
               disabled={loginStarting}
             >
               {loginStarting ? <Spin /> : <UserPlus />}
-              Add account
+              {t("app.addAccount")}
             </Button>
-            <IconBtn title="Toggle theme" onClick={toggle}>
+            <IconBtn title={t("app.toggleTheme")} onClick={toggle}>
               {dark ? <Sun /> : <Moon />}
             </IconBtn>
-            <IconBtn title="Settings" onClick={() => dispatch(setSettingsOpen(true))}>
+            <IconBtn
+              title={t("app.settings")}
+              onClick={() => dispatch(setSettingsOpen(true))}
+            >
               <Settings />
             </IconBtn>
           </div>
@@ -894,10 +920,10 @@ export default function App() {
                     className="shrink-0 border-amber-500/40 bg-transparent"
                   >
                     {restartBusy ? <Spin /> : <RotateCw />}
-                    Retry restart
+                    {t("app.retryRestart")}
                   </Button>
                 )}
-                <IconBtn title="Dismiss" onClick={() => dispatch(setSwitchInfo(null))}>
+                <IconBtn title={t("action.dismiss")} onClick={() => dispatch(setSwitchInfo(null))}>
                   <X />
                 </IconBtn>
               </div>
@@ -906,7 +932,7 @@ export default function App() {
             {!initialized ? (
               loadError ? (
                 <div className="flex flex-col items-center gap-3 rounded-2xl border bg-card px-6 py-14 text-center">
-                  <p className="text-sm font-semibold">Could not start the app</p>
+                  <p className="text-sm font-semibold">{t("app.startFailed")}</p>
                   <p className="max-w-md text-xs text-muted-foreground">{loadError}</p>
                   <Button
                     onClick={() => {
@@ -915,12 +941,12 @@ export default function App() {
                     }}
                   >
                     <RefreshCw />
-                    Retry
+                    {t("action.retry")}
                   </Button>
                 </div>
               ) : (
                 <div className="flex items-center justify-center gap-2 rounded-2xl border bg-card px-6 py-20 text-sm text-muted-foreground">
-                  <Spin /> Loading accounts…
+                  <Spin /> {t("app.loadingAccounts")}
                 </div>
               )
             ) : (
@@ -930,25 +956,27 @@ export default function App() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                          Active account
+                          {t("app.activeAccount")}
                         </p>
                         {active && (
                           <Badge
                             variant="outline"
                             className="border-primary/30 bg-primary/5 text-primary"
                           >
-                            Current session
+                            {t("app.currentSession")}
                           </Badge>
                         )}
                         {snap?.auto_fetch && snap.auto_fetch !== "None" && (
-                          <Badge variant="secondary">Auto · {snap.auto_fetch}</Badge>
+                          <Badge variant="secondary">
+                            {t("app.autoBadge", { value: snap.auto_fetch })}
+                          </Badge>
                         )}
                         {activeEmail && fetchFailed[activeEmail] && (
                           <Tooltip>
                             <TooltipTrigger
                               render={
                                 <Badge variant="destructive" tabIndex={0}>
-                                  Re-auth needed
+                                  {t("app.reAuthNeeded")}
                                 </Badge>
                               }
                             />
@@ -975,12 +1003,12 @@ export default function App() {
                           </Tooltip>
                         ) : (
                           <h1 className="truncate text-xl font-semibold tracking-[-0.02em] sm:text-2xl">
-                            No active session
+                            {t("app.noActiveSession")}
                           </h1>
                         )}
                         {activeEmail && (
                           <IconBtn
-                            title="Copy active email"
+                            title={t("app.copyActiveEmail")}
                             onClick={() => void copyAccountEmail(activeEmail)}
                           >
                             <Copy />
@@ -990,11 +1018,14 @@ export default function App() {
                       <p className="mt-1 text-xs text-muted-foreground">
                         {active
                           ? active.last_fetched === undefined
-                            ? "No quota fetched yet."
-                            : `Last fetch ${activeLastFetchAgo} · ${activeLastFetch}`
+                            ? t("app.noQuotaFetched")
+                            : t("app.lastFetch", {
+                                ago: activeLastFetchAgo,
+                                stamp: activeLastFetch,
+                              })
                           : snap?.auth_file_exists
-                            ? "Fetch quota for the active Codex session."
-                            : "Sign in to Codex to create an account."}
+                            ? t("app.fetchActiveHint")
+                            : t("app.signInHint")}
                       </p>
                       <div className="mt-3 flex flex-wrap items-center gap-1.5">
                         {activeEmail ? (
@@ -1005,7 +1036,7 @@ export default function App() {
                               disabled={fetchAllBusy}
                             >
                               <RefreshCw />
-                              Refresh quota
+                              {t("app.refreshQuota")}
                             </Button>
                             <Button
                               size="sm"
@@ -1013,18 +1044,18 @@ export default function App() {
                               onClick={() => void dispatch(openResets(activeEmail))}
                             >
                               <Coins />
-                              Reset credits
+                              {t("action.resetCredits")}
                             </Button>
                           </>
                         ) : (
                           <Button size="sm" onClick={startLoginUi} disabled={loginStarting}>
                             <UserPlus />
-                            Add account
+                            {t("app.addAccount")}
                           </Button>
                         )}
                         {codexStatus?.supported && (
                           <IconBtn
-                            title="Restart Codex"
+                            title={t("app.restartCodex")}
                             busyKey="restart-codex"
                             onClick={restartCodexNow}
                           >
@@ -1036,7 +1067,7 @@ export default function App() {
 
                     <div className="flex w-full max-w-[29.625rem] shrink-0 flex-col gap-2 rounded-xl border bg-muted/20 p-3 lg:w-[29.625rem]">
                       <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                        Quota remaining
+                        {t("app.quotaRemaining")}
                       </p>
                       {active ? (
                         <>
@@ -1056,7 +1087,9 @@ export default function App() {
                           />
                         </>
                       ) : (
-                        <p className="py-2 text-xs text-muted-foreground">No quota data yet.</p>
+                        <p className="py-2 text-xs text-muted-foreground">
+                          {t("app.noQuotaData")}
+                        </p>
                       )}
                     </div>
                   </div>
@@ -1065,7 +1098,7 @@ export default function App() {
                 <section className="flex flex-col gap-2.5">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="text-sm font-semibold tracking-[-0.01em]">
-                      Accounts
+                      {t("app.accounts")}
                       <span className="ml-1.5 text-xs font-normal text-muted-foreground">
                         {rows.length}
                       </span>
@@ -1073,19 +1106,19 @@ export default function App() {
                     <div className="ml-auto flex flex-wrap items-center gap-1">
                       <div className="inline-flex items-center gap-0.5 rounded-lg bg-muted p-0.5">
                         <SortButton
-                          label="Reset"
+                          label={t("sort.reset")}
                           active={sortKey === "reset"}
                           asc={sortAsc}
                           onClick={() => void dispatch(cycleSort("reset"))}
                         />
                         <SortButton
-                          label="Email"
+                          label={t("sort.email")}
                           active={sortKey === "email"}
                           asc={sortAsc}
                           onClick={() => void dispatch(cycleSort("email"))}
                         />
                         <SortButton
-                          label="Quota"
+                          label={t("sort.quota")}
                           active={sortKey === "quota"}
                           asc={sortAsc}
                           onClick={() => void dispatch(cycleSort("quota"))}
@@ -1094,8 +1127,8 @@ export default function App() {
                       <IconBtn
                         title={
                           snap?.show_archived
-                            ? "Hide archived accounts"
-                            : "Show archived accounts"
+                            ? t("app.hideArchived")
+                            : t("app.showArchived")
                         }
                         pressed={!!snap?.show_archived}
                         onClick={() => void dispatch(toggleArchivedVisibility())}
@@ -1103,7 +1136,7 @@ export default function App() {
                         {snap?.show_archived ? <EyeOff /> : <Eye />}
                       </IconBtn>
                       <IconBtn
-                        title="Fetch all accounts"
+                        title={t("app.fetchAllAccounts")}
                         busyKey="fetch:all-accounts"
                         onClick={() => void dispatch(fetchAllAccounts())}
                       >
@@ -1116,12 +1149,12 @@ export default function App() {
                     <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed bg-card px-6 py-12 text-center text-muted-foreground">
                       <p className="text-sm">
                         {snap && !snap.auth_file_exists
-                          ? "Not signed in — the Codex auth file is missing."
-                          : "No accounts yet. Add an account to start monitoring quotas."}
+                          ? t("app.notSignedIn")
+                          : t("app.noAccounts")}
                       </p>
                       <Button onClick={startLoginUi} disabled={loginStarting}>
                         {loginStarting ? <Spin /> : <UserPlus />}
-                        Add account
+                        {t("app.addAccount")}
                       </Button>
                     </div>
                   ) : (
@@ -1172,12 +1205,14 @@ export default function App() {
             >
               <StatusDot active={anyBusy} pulse />
               <span className="min-w-0 truncate text-xs text-muted-foreground">
-                {anyBusy ? "Working… " : ""}
-                {updateProgress !== null ? `Downloading update ${updateProgress}%… ` : ""}
+                {anyBusy ? `${t("app.working")} ` : ""}
+                {updateProgress !== null
+                  ? `${t("app.downloadingUpdate", { progress: updateProgress })} `
+                  : ""}
                 {status}
               </span>
               <span className="ml-auto shrink-0 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                Activity
+                {t("app.activity")}
               </span>
               {logsOpen ? (
                 <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -1195,13 +1230,13 @@ export default function App() {
             <div className="border-t px-3 pt-2 pb-3 sm:px-4">
               <div className="flex flex-wrap items-center gap-1 pb-2">
                 <IconBtn
-                  title="Copy status"
+                  title={t("app.copyStatus")}
                   onClick={() => void navigator.clipboard.writeText(status)}
                 >
                   <Copy />
                 </IconBtn>
                 <IconBtn
-                  title="Clear logs"
+                  title={t("app.clearLogs")}
                   busyKey="logs:clear"
                   onClick={() => void dispatch(clearLogs())}
                 >
@@ -1210,8 +1245,8 @@ export default function App() {
                 <IconBtn
                   title={
                     alwaysScrollToBottom
-                      ? "Disable always scroll to bottom"
-                      : "Always scroll to bottom"
+                      ? t("app.disableAutoScroll")
+                      : t("app.enableAutoScroll")
                   }
                   pressed={alwaysScrollToBottom}
                   onClick={() => setAlwaysScrollToBottom((enabled) => !enabled)}
@@ -1219,14 +1254,14 @@ export default function App() {
                   <ArrowDownToLine />
                 </IconBtn>
                 <IconBtn
-                  title="Export data"
+                  title={t("app.exportData")}
                   busyKey="data:export"
                   onClick={() => void pickExportFile()}
                 >
                   <Download />
                 </IconBtn>
                 <IconBtn
-                  title="Import data"
+                  title={t("app.importData")}
                   busyKey="data:import"
                   onClick={() => void pickImportFile()}
                 >
@@ -1234,7 +1269,7 @@ export default function App() {
                 </IconBtn>
                 <Separator orientation="vertical" className="mx-1 h-5" />
                 <IconBtn
-                  title={`Check for updates (v${snap?.app_version ?? "?"})`}
+                  title={t("app.checkUpdates", { version: snap?.app_version ?? "?" })}
                   busyKey="update:check"
                   onClick={() => void dispatch(checkUpdates(true))}
                 >
@@ -1243,7 +1278,9 @@ export default function App() {
                 {updateReady && (
                   <IconBtn
                     title={
-                      updateProgress !== null ? `Installing… ${updateProgress}%` : updateReady
+                      updateProgress !== null
+                        ? t("app.installing", { progress: updateProgress })
+                        : updateReady
                     }
                     busyKey="update:install"
                     onClick={() => void dispatch(installUpdate())}
@@ -1253,7 +1290,7 @@ export default function App() {
                 )}
                 {codexStatus?.supported && (
                   <IconBtn
-                    title="Restart Codex"
+                    title={t("app.restartCodex")}
                     busyKey="restart-codex"
                     onClick={restartCodexNow}
                   >
@@ -1262,7 +1299,7 @@ export default function App() {
                 )}
                 <span className="ml-auto flex shrink-0 items-center gap-1.5">
                   <Label htmlFor="auto-fetch" className="text-[11px] text-muted-foreground">
-                    Auto fetch
+                    {t("app.autoFetch")}
                   </Label>
                   <Select
                     value={snap?.auto_fetch ?? "None"}
@@ -1284,7 +1321,7 @@ export default function App() {
               <div ref={logsScrollHost}>
                 <ScrollArea className="h-48 rounded-lg border bg-muted/30">
                   <pre className="p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-muted-foreground select-text">
-                    {logs.length === 0 ? "(no log entries yet)" : logs.join("\n")}
+                    {logs.length === 0 ? t("app.noLogs") : logs.join("\n")}
                   </pre>
                 </ScrollArea>
               </div>
@@ -1297,22 +1334,20 @@ export default function App() {
             <DialogHeader>
               <DialogTitle>
                 {confirm?.kind === "switch"
-                  ? "Switch Codex account"
+                  ? t("switch.title")
                   : confirm?.kind === "remove"
-                    ? "Remove account"
-                    : "Archive account"}
+                    ? t("switch.removeTitle")
+                    : t("switch.archiveTitle")}
               </DialogTitle>
               <DialogDescription>
                 {confirm?.kind === "remove" &&
-                  `Remove ${confirm.email}? Quota history for this account is deleted.`}
+                  t("switch.removeBody", { email: confirm.email })}
                 {confirm?.kind === "archive" &&
-                  `${confirm.archived ? "Unarchive" : "Archive"} ${confirm.email}?`}
-                {confirm?.kind === "switch" && (
-                  <>
-                    Make <span className="font-medium text-foreground">{confirm.email}</span> the
-                    active Codex sign-in.
-                  </>
-                )}
+                  (confirm.archived
+                    ? t("switch.unarchiveBody", { email: confirm.email })
+                    : t("switch.archiveBody", { email: confirm.email }))}
+                {confirm?.kind === "switch" &&
+                  t("switch.makeActive", { email: confirm.email })}
               </DialogDescription>
             </DialogHeader>
             {confirm?.kind === "switch" && (
@@ -1333,14 +1368,13 @@ export default function App() {
                 </div>
                 <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
                   <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
-                  Only the active Codex session file is rewritten. Other saved accounts stay
-                  untouched.
+                  {t("switch.safety")}
                 </p>
               </>
             )}
             <DialogFooter>
               <Button variant="outline" onClick={() => dispatch(setConfirm(null))}>
-                Cancel
+                {t("action.cancel")}
               </Button>
               <Button
                 variant={confirm?.kind === "remove" ? "destructive" : "default"}
@@ -1352,22 +1386,20 @@ export default function App() {
                     <Spin />
                     {confirm?.kind === "switch"
                       ? switchStage === "closing"
-                        ? "Closing Codex…"
+                        ? t("switch.closing")
                         : switchStage === "switching"
-                          ? "Switching…"
+                          ? t("switch.switching")
                           : switchStage === "reopening"
-                            ? "Reopening Codex…"
-                            : "Switching…"
-                      : "Working…"}
+                            ? t("switch.reopening")
+                            : t("switch.switching")
+                      : t("common.working")}
                   </>
                 ) : confirm?.kind === "switch" ? (
-                  confirmStatus?.running ? (
-                    "Close, switch & reopen"
-                  ) : (
-                    "Switch account"
-                  )
+                  confirmStatus?.running
+                    ? t("switch.closeAndReopen")
+                    : t("switch.switchAccount")
                 ) : (
-                  "Confirm"
+                  t("action.confirm")
                 )}
               </Button>
             </DialogFooter>
@@ -1380,29 +1412,27 @@ export default function App() {
         >
           <DialogContent className="max-w-xl">
             <DialogHeader>
-              <DialogTitle>Reset Credits — {resetsEmail}</DialogTitle>
+              <DialogTitle>{t("reset.title", { email: resetsEmail ?? "" })}</DialogTitle>
             </DialogHeader>
             {!resets?.credits?.length ? (
-              <p className="text-sm text-muted-foreground">
-                No reset credits found. Fetch quota first.
-              </p>
+              <p className="text-sm text-muted-foreground">{t("reset.empty")}</p>
             ) : (
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Expires</TableHead>
-                    <TableHead>Remaining</TableHead>
-                    <TableHead>Granted</TableHead>
-                    <TableHead>Status</TableHead>
+                    <TableHead>{t("reset.expires")}</TableHead>
+                    <TableHead>{t("reset.remaining")}</TableHead>
+                    <TableHead>{t("reset.granted")}</TableHead>
+                    <TableHead>{t("reset.status")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {resets.credits.map((c, i) => (
                     <TableRow key={i}>
-                      <TableCell>{formatCreditExpires(c.expires_at, now)}</TableCell>
-                      <TableCell>{formatTimeRemaining(c.expires_at, now)}</TableCell>
-                      <TableCell>{formatGrantedAt(c.granted_at)}</TableCell>
-                      <TableCell>{c.status ?? "unknown"}</TableCell>
+                      <TableCell>{formatCreditExpires(c.expires_at, now, locale)}</TableCell>
+                      <TableCell>{formatTimeRemaining(c.expires_at, now, locale)}</TableCell>
+                      <TableCell>{formatGrantedAt(c.granted_at, locale)}</TableCell>
+                      <TableCell>{c.status ?? t("common.unknown")}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -1410,7 +1440,9 @@ export default function App() {
             )}
             {soonest && (
               <p className="text-xs text-muted-foreground">
-                Soonest expiry in {formatTimeRemaining(soonest.expires_at, now)}.
+                {t("reset.soonest", {
+                  time: formatTimeRemaining(soonest.expires_at, now, locale),
+                })}
               </p>
             )}
           </DialogContent>
@@ -1419,6 +1451,7 @@ export default function App() {
         <AddAccountDialog />
         <SettingsDialog />
       </div>
-    </TooltipProvider>
+      </TooltipProvider>
+    </I18nProvider>
   );
 }

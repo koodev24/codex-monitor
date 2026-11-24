@@ -43,6 +43,7 @@ pub struct Snapshot {
     pub show_menu_bar: bool,
     pub notifications_enabled: bool,
     pub auto_check_updates: bool,
+    pub locale: String,
     pub auth_file_exists: bool,
     pub backup_emails: Vec<String>,
     pub app_version: String,
@@ -297,6 +298,7 @@ pub fn get_snapshot(app: AppHandle, state: State<AppState>) -> Snapshot {
             show_menu_bar: st.show_menu_bar,
             notifications_enabled: st.notifications_enabled,
             auto_check_updates: st.auto_check_updates,
+            locale: st.locale.clone(),
             auth_file_exists: st.auth.auth_file_exists(),
             backup_emails: st.auth.list_backup_emails(),
             app_version: app.package_info().version.to_string(),
@@ -951,6 +953,18 @@ pub fn save_auto_check_updates(state: State<AppState>, enabled: bool) -> Result<
 }
 
 #[tauri::command]
+pub fn save_locale(app: AppHandle, state: State<AppState>, locale: String) -> Result<(), String> {
+    let locale = crate::state::sanitize_locale(&locale);
+    state_lock(&state).save_locale(&locale);
+    // The preference is already saved; a hidden menu bar or a failed relabel
+    // must not turn a successful language change into a settings error.
+    if let Err(error) = crate::tray::set_locale(&app, crate::state::resolved_locale(&locale)) {
+        eprintln!("tray locale update failed: {error}");
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn get_resets(state: State<AppState>, email: String) -> Option<ResetCreditsPayload> {
     state_lock(&state)
         .usage
@@ -1552,6 +1566,7 @@ pub fn all_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool {
         save_show_menu_bar,
         save_notifications_enabled,
         save_auto_check_updates,
+        save_locale,
         get_resets,
         get_logs,
         clear_logs,
@@ -1592,6 +1607,7 @@ mod real_store_tests {
             show_menu_bar: st.show_menu_bar,
             notifications_enabled: st.notifications_enabled,
             auto_check_updates: st.auto_check_updates,
+            locale: st.locale.clone(),
             auth_file_exists: st.auth.auth_file_exists(),
             backup_emails: st.auth.list_backup_emails(),
             app_version: "test".into(),

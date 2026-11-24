@@ -13,6 +13,7 @@ export interface Snapshot {
   show_menu_bar: boolean;
   notifications_enabled: boolean;
   auto_check_updates: boolean;
+  locale: string;
   auth_file_exists: boolean;
   backup_emails: string[];
   app_version: string;
@@ -80,6 +81,7 @@ export const api = {
     invoke<void>("save_notifications_enabled", { enabled }),
   saveAutoCheckUpdates: (enabled: boolean) =>
     invoke<void>("save_auto_check_updates", { enabled }),
+  saveLocale: (locale: string) => invoke<void>("save_locale", { locale }),
   resets: (email: string) => invoke<ResetCreditsPayload | null>("get_resets", { email }),
   logs: () => invoke<string[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),

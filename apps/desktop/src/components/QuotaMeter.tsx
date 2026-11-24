@@ -1,4 +1,5 @@
 import { Progress } from "@/components/ui/progress";
+import { useI18n } from "@/i18n";
 import { formatResetCountdown, formatResetStamp } from "@/lib/format";
 import { quotaLeft, quotaTone } from "@/lib/quota";
 import { cn } from "@/lib/utils";
@@ -26,6 +27,7 @@ export function QuotaMeter({
   showStamp?: boolean;
   className?: string;
 }) {
+  const { locale, t } = useI18n();
   const left = quotaLeft(used);
   const gridSeparator =
     "relative before:absolute before:top-1/2 before:-left-1 before:-translate-x-1/2 before:-translate-y-1/2 before:text-muted-foreground/40 before:content-['·']";
@@ -54,7 +56,7 @@ export function QuotaMeter({
       )}
       <Progress
         value={left}
-        aria-label={`${label} quota remaining`}
+        aria-label={t("quota.ariaRemaining", { label })}
         className={cn(
           "shrink-0 gap-0",
           compact
@@ -87,7 +89,9 @@ export function QuotaMeter({
           !compact && gridSeparator,
         )}
       >
-        {resetTs ? `Reset in ${formatResetCountdown(resetTs, now)}` : "Reset unknown"}
+        {resetTs
+          ? t("quota.resetIn", { time: formatResetCountdown(resetTs, now, locale) })
+          : t("quota.resetUnknown")}
       </span>
       {showStamp && resetTs ? (
         <>
@@ -97,7 +101,7 @@ export function QuotaMeter({
             </span>
           )}
           <span className={cn("min-w-0 truncate", !compact && gridSeparator)}>
-            {formatResetStamp(resetTs, now)}
+            {formatResetStamp(resetTs, now, locale)}
           </span>
         </>
       ) : null}

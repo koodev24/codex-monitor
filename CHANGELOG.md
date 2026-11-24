@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.6.0 - 2026-11-24
+
+### Added
+
+- An interface language selector with System, English, Simplified Chinese, Traditional Chinese, and Japanese. The choice persists and applies to the dashboard, menu-bar popover, dialogs, settings, and interface status messages.
+- Localized native menu-bar menu labels that follow the selected interface language.
+- A Japanese, Simplified Chinese, and Traditional Chinese README alongside the English version.
+
+### Changed
+
+- Release assets now use one naming scheme on every platform: `CodexMonitor-<version>-<os>-<arch>.<ext>`.
+- macOS releases ship both Apple Silicon and Intel builds.
+- Releases regenerate the signed updater feed (`latest.json`) after every platform has finished, then attach `CodexMonitor-<version>-SHA256SUMS.txt`.
+- Release notes are generated from this changelog instead of a generic placeholder.
+- Backend diagnostic logs stay in English so bug reports remain consistent.
+
+### Fixed
+
+- Changing the interface language no longer reports a settings error when the menu-bar item is hidden.
+- The first status message after startup follows the saved language instead of staying in English.
+
+### Removed
+
+- The `CodexMonitor-macOS.zip` compatibility asset. Users still on the v1 Python app must migrate manually; see the README.
+
 ## v2.5.2 - 2026-11-17
 
 ### Added

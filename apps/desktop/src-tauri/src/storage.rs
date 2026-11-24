@@ -166,6 +166,12 @@ pub(crate) fn sanitize_meta(meta: &Map<String, Value>) -> Meta {
     if let Some(v @ Value::String(_)) | Some(v @ Value::Null) = meta.get("sort_column") {
         clean.insert("sort_column".into(), v.clone());
     }
+    if let Some(Value::String(locale)) = meta.get("locale") {
+        clean.insert(
+            "locale".into(),
+            Value::String(crate::state::sanitize_locale(locale)),
+        );
+    }
     for key in [
         "sort_asc",
         "show_archived",

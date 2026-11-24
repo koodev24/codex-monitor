@@ -17,6 +17,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { I18nProvider, useI18n, useT } from "@/i18n";
 import { api, type CodexStatus, type Snapshot, type SwitchResult } from "@/lib/tauri";
 import {
   hasShortWindow,
@@ -103,11 +104,12 @@ function quotaLinesOf(account: AccountUsage | undefined): QuotaLine[] {
 }
 
 function QuotaLines({ account, now }: { account: AccountUsage | undefined; now: number }) {
+  const { t } = useI18n();
   const lines = quotaLinesOf(account);
   if (lines.length === 0) {
     return (
       <span className="block truncate text-[9px] tabular-nums text-muted-foreground">
-        Not fetched yet
+        {t("tray.notFetched")}
       </span>
     );
   }
@@ -123,6 +125,7 @@ function QuotaLines({ account, now }: { account: AccountUsage | undefined; now: 
 function TrayApp() {
   useTrayTheme();
   const [snap, setSnap] = useState<Snapshot | null>(null);
+  const t = useT(snap?.locale);
   const [codex, setCodex] = useState<CodexStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -189,7 +192,9 @@ function TrayApp() {
       await load();
       setRefreshing(false);
     }
-    if (failures.length > 0) setError(`Quota refresh failed — ${failures.join("; ")}`);
+    if (failures.length > 0) {
+      setError(t("tray.refreshFailed", { errors: failures.join("; ") }));
+    }
   }
 
   useEffect(() => {
@@ -255,25 +260,27 @@ function TrayApp() {
   }, [snap]);
 
   const codexLabel = !codex
-    ? "Checking Codex…"
+    ? t("codex.checking")
     : !codex.supported
-      ? "Lifecycle unavailable"
+      ? t("codex.lifecycleUnavailable")
       : !codex.installed
-        ? "Codex not installed"
+        ? t("codex.notInstalled")
         : codex.running
-          ? `Codex running${codex.process_count > 1 ? ` · ${codex.process_count}` : ""}`
-          : "Codex closed";
+          ? codex.process_count > 1
+            ? t("codex.runningWithCount", { count: codex.process_count })
+            : t("codex.running")
+          : t("codex.closed");
   const confirmText = !confirmStatus
-    ? "Checking whether Codex is running…"
+    ? t("switch.checking")
     : !confirmStatus.supported
-      ? "Only the active auth file will change."
+      ? t("switch.lifecycleUnavailable")
       : !confirmStatus.installed
-        ? "Codex desktop was not found. Only the active auth file will change."
+        ? t("switch.notFound")
         : confirmStatus.running
-          ? `Codex is running (${confirmStatus.process_count} process${
-              confirmStatus.process_count === 1 ? "" : "es"
-            }). It will close, switch, then reopen automatically.`
-          : "Codex isn't running. The switch applies now and the next launch uses this account.";
+          ? confirmStatus.process_count === 1
+            ? t("switch.runningOne")
+            : t("switch.runningMany", { count: confirmStatus.process_count })
+          : t("switch.notRunning");
 
   function beginSwitch(email: string) {
     setPending(email);
@@ -301,7 +308,8 @@ function TrayApp() {
   }
 
   return (
-    <TooltipProvider delay={150}>
+    <I18nProvider preference={snap?.locale}>
+      <TooltipProvider delay={150}>
       <div className="flex h-screen w-screen flex-col overflow-hidden rounded-2xl border border-black/10 bg-popover/95 text-popover-foreground shadow-2xl ring-1 ring-black/5 backdrop-blur-2xl dark:border-white/10 dark:ring-white/5">
         <header className="flex shrink-0 items-center gap-2 border-b px-3.5 py-2.5">
           <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
@@ -322,7 +330,7 @@ function TrayApp() {
                   variant="ghost"
                   onClick={() => void fetchQuota()}
                   disabled={refreshing || busy || pending !== null}
-                  aria-label="Fetch quota for all accounts"
+                  aria-label={t("tray.fetchQuotaAria")}
                 >
                   <RefreshCw className={cn(refreshing && "animate-spin")} />
                 </Button>
@@ -335,8 +343,8 @@ function TrayApp() {
               className="max-w-[16rem] whitespace-normal"
             >
               <span className="flex flex-col gap-0.5">
-                <span className="font-medium">Fetch quota</span>
-                <span className="opacity-70">Fresh 5h and 7d usage for every account.</span>
+                <span className="font-medium">{t("tray.fetchQuota")}</span>
+                <span className="opacity-70">{t("tray.fetchQuotaDetail")}</span>
               </span>
             </TooltipContent>
           </Tooltip>
@@ -356,11 +364,11 @@ function TrayApp() {
             disabled={busy}
           >
             <ChevronLeft className="size-3.5" aria-hidden />
-            Back
+            {t("action.back")}
           </button>
           <div className="rounded-xl border bg-card p-3">
             <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              Switch to
+              {t("tray.switchTo")}
             </p>
             <Tooltip>
               <TooltipTrigger
@@ -391,22 +399,22 @@ function TrayApp() {
               }}
               disabled={busy}
             >
-              Cancel
+              {t("action.cancel")}
             </Button>
             <Button size="sm" onClick={() => void doSwitch()} disabled={busy}>
               {busy ? (
                 <>
                   <Spin />{" "}
                   {stage === "closing"
-                    ? "Closing Codex…"
+                    ? t("switch.closing")
                     : stage === "reopening"
-                      ? "Reopening Codex…"
-                      : "Switching…"}
+                      ? t("switch.reopening")
+                      : t("switch.switching")}
                 </>
               ) : confirmStatus?.running ? (
-                "Switch & reopen"
+                t("tray.switchAndReopen")
               ) : (
-                "Switch account"
+                t("tray.switchAccount")
               )}
             </Button>
           </div>
@@ -416,7 +424,7 @@ function TrayApp() {
           <div className="shrink-0 p-3.5 pb-2">
             <div className="rounded-xl border bg-card p-3">
               <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                Active account
+                {t("app.activeAccount")}
               </p>
               {activeEmail ? (
                 <Tooltip>
@@ -430,14 +438,14 @@ function TrayApp() {
                   <TooltipContent>{activeEmail}</TooltipContent>
                 </Tooltip>
               ) : (
-                <p className="truncate text-xs font-medium">No active session</p>
+                <p className="truncate text-xs font-medium">{t("tray.noActiveSession")}</p>
               )}
               <div className="mt-1.5">
                 {activeUsage ? (
                   <QuotaLines account={activeUsage} now={now} />
                 ) : (
                   <span className="block text-[9px] text-muted-foreground">
-                    Fetch quota to see usage
+                    {t("tray.fetchQuotaToSee")}
                   </span>
                 )}
               </div>
@@ -465,7 +473,7 @@ function TrayApp() {
                 type="button"
                 className="shrink-0 opacity-70 hover:opacity-100"
                 onClick={() => setNotice(null)}
-                aria-label="Dismiss"
+                aria-label={t("action.dismiss")}
               >
                 <X className="size-3" />
               </button>
@@ -480,7 +488,7 @@ function TrayApp() {
 
           <div className="flex shrink-0 items-center justify-between px-4 pb-1">
             <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-              Accounts
+              {t("tray.accounts")}
             </p>
             <span className="text-[9px] tabular-nums text-muted-foreground">
               {accounts.length}
@@ -490,11 +498,11 @@ function TrayApp() {
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-1">
             {loading ? (
               <div className="flex items-center justify-center gap-2 py-8 text-[11px] text-muted-foreground">
-                <Spin /> Loading…
+                <Spin /> {t("common.loading")}
               </div>
             ) : accounts.length === 0 ? (
               <p className="px-2 py-6 text-center text-[11px] text-muted-foreground">
-                No accounts yet.
+                {t("tray.noAccounts")}
               </p>
             ) : (
               <div className="flex flex-col gap-0.5">
@@ -534,20 +542,21 @@ function TrayApp() {
               className="flex-1"
               onClick={() => void api.trayShowMain()}
             >
-              Open dashboard
+              {t("tray.openDashboard")}
             </Button>
             <Button
               size="sm"
               variant="ghost"
               onClick={() => void api.quitApp()}
             >
-              Quit
+              {t("tray.quit")}
             </Button>
           </footer>
         </>
       )}
       </div>
-    </TooltipProvider>
+      </TooltipProvider>
+    </I18nProvider>
   );
 }
 

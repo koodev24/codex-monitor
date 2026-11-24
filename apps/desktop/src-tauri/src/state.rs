@@ -9,6 +9,45 @@ use crate::storage::{Meta, UsageStorage};
 
 pub const AUTO_FETCH_OPTIONS: &[&str] = &["None", "15 Mins", "1 Hr", "3 Hrs", "12 Hrs", "24 Hrs"];
 
+pub const LOCALE_OPTIONS: &[&str] = &["system", "en", "zh-CN", "zh-TW", "ja"];
+
+/// Keep a stored preference within the shipped locale set. Unknown values fall
+/// back to `system`, so an older or hand-edited file cannot break the UI.
+pub fn sanitize_locale(value: &str) -> String {
+    if LOCALE_OPTIONS.contains(&value) {
+        value.to_string()
+    } else {
+        "system".to_string()
+    }
+}
+
+/// Resolve `system` to a concrete shipped locale for native menu labels.
+pub fn resolved_locale(preference: &str) -> &'static str {
+    match sanitize_locale(preference).as_str() {
+        "en" => "en",
+        "zh-CN" => "zh-CN",
+        "zh-TW" => "zh-TW",
+        "ja" => "ja",
+        _ => {
+            let raw = sys_locale::get_locale().unwrap_or_default();
+            let lower = raw.to_ascii_lowercase();
+            if lower.starts_with("zh-tw")
+                || lower.starts_with("zh-hk")
+                || lower.starts_with("zh-mo")
+                || lower.contains("hant")
+            {
+                "zh-TW"
+            } else if lower.starts_with("zh") {
+                "zh-CN"
+            } else if lower.starts_with("ja") {
+                "ja"
+            } else {
+                "en"
+            }
+        }
+    }
+}
+
 fn auto_fetch_seconds(label: &str) -> u64 {
     match label {
         "15 Mins" => 15 * 60,
@@ -122,6 +161,7 @@ pub struct MonitorState {
     pub show_menu_bar: bool,
     pub notifications_enabled: bool,
     pub auto_check_updates: bool,
+    pub locale: String,
     pub last_signature: Option<(u64, i128)>,
     pub last_access_token: Option<String>,
     pub last_refresh_marker: Option<String>,
@@ -188,6 +228,9 @@ impl MonitorState {
             auto_check_updates: get("auto_check_updates")
                 .map(|v| v != Value::Bool(false))
                 .unwrap_or(true),
+            locale: get("locale")
+                .and_then(|v| v.as_str().map(sanitize_locale))
+                .unwrap_or_else(|| "system".into()),
             last_signature: None,
             last_access_token: None,
             last_refresh_marker: None,
@@ -259,6 +302,13 @@ impl MonitorState {
         self.auto_check_updates = enabled;
         self.storage
             .set_meta_value("auto_check_updates", Some(Value::Bool(enabled)));
+        self.persist();
+    }
+
+    pub fn save_locale(&mut self, locale: &str) {
+        self.locale = sanitize_locale(locale);
+        self.storage
+            .set_meta_value("locale", Some(Value::String(self.locale.clone())));
         self.persist();
     }
 
@@ -455,6 +505,16 @@ impl MonitorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locale_preferences_stay_in_the_shipped_set() {
+        for locale in LOCALE_OPTIONS {
+            assert_eq!(sanitize_locale(locale), *locale);
+        }
+        assert_eq!(sanitize_locale("system"), "system");
+        assert_eq!(sanitize_locale("fr-FR"), "system");
+        assert_eq!(sanitize_locale(""), "system");
+    }
 
     fn response(email: &str, primary_secs: f64, secondary_secs: Option<f64>) -> UsageResponse {
         let win = |secs: f64, used: f64| {

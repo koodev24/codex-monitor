@@ -1,5 +1,6 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import { sendNotification } from "@tauri-apps/plugin-notification";
+import { translateFor, type MessageKey } from "../i18n/messages";
 import { api, type Snapshot } from "../lib/tauri";
 import { refreshLogs } from "./logsSlice";
 import { setBusy, setConfirm, setResetsView, setStatus, setSwitchInfo } from "./uiSlice";
@@ -49,7 +50,13 @@ export const loadSnapshot = createAsyncThunk<void, void, { state: RootState }>(
         const s = await api.snapshot();
         dispatch(setSnapshot(s));
         dispatch(setLoadError(null));
-        if (getState().ui.status === "Starting…") dispatch(setStatus("Ready."));
+        const status = getState().ui.status;
+        if (
+          status === "Starting…" ||
+          status === translateFor(s.locale, "status.starting")
+        ) {
+          dispatch(setStatus(translateFor(s.locale, "status.ready")));
+        }
         return;
       } catch (e) {
         lastError = `${e}`;
@@ -57,13 +64,21 @@ export const loadSnapshot = createAsyncThunk<void, void, { state: RootState }>(
       }
     }
     dispatch(setLoadError(lastError));
-    dispatch(setStatus(`Failed to load state: ${lastError}`));
+    dispatch(
+      setStatus(
+        translateFor(getState().snapshot.snap?.locale, "status.loadFailed", {
+          error: lastError,
+        }),
+      ),
+    );
   },
 );
 
 export const pollOnce = createAsyncThunk<void, void, { state: RootState }>(
   "snapshot/poll",
   async (_, { getState, dispatch }) => {
+    const t = (key: MessageKey, params?: Record<string, string | number>) =>
+      translateFor(getState().snapshot.snap?.locale, key, params);
     try {
       const o = await api.processAuthFile();
       if (o.kind === "NoChange") {
@@ -72,7 +87,7 @@ export const pollOnce = createAsyncThunk<void, void, { state: RootState }>(
         const retries = getState().snapshot.authRetries;
         if (retries < MISSING_TOKEN_RETRIES) {
           dispatch(setAuthRetries(retries + 1));
-          dispatch(setStatus("Auth file changing, retrying read…"));
+          dispatch(setStatus(t("status.authChanging")));
           setTimeout(() => void dispatch(pollOnce()), 350);
           return;
         }
@@ -86,14 +101,14 @@ export const pollOnce = createAsyncThunk<void, void, { state: RootState }>(
           dispatch(setStatus(o.message));
           if (getState().snapshot.snap?.notifications_enabled !== false) {
             try {
-              sendNotification({ title: "Codex Account Monitor", body: o.message });
+              sendNotification({ title: t("notifications.title"), body: o.message });
             } catch {
             }
           }
         } else if (o.kind === "Fetched" || o.kind === "LoggedOut") {
           dispatch(setStatus(o.message));
         } else if (o.kind === "ParseError" || o.kind === "NoFile") {
-          dispatch(setStatus(o.kind === "NoFile" ? "Auth file removed. Signed out." : o.message));
+          dispatch(setStatus(o.kind === "NoFile" ? t("status.authRemoved") : o.message));
         }
         await dispatch(loadSnapshot());
         await dispatch(refreshLogs());
@@ -109,7 +124,7 @@ export const pollOnce = createAsyncThunk<void, void, { state: RootState }>(
         await dispatch(refreshLogs());
       }
     } catch (e) {
-      dispatch(setStatus(`Auto-fetch failed: ${e}`));
+      dispatch(setStatus(t("status.autoFetchFailed", { error: `${e}` })));
     }
   },
 );
@@ -117,10 +132,14 @@ export const pollOnce = createAsyncThunk<void, void, { state: RootState }>(
 export const manualFetch = createAsyncThunk<void, string | undefined, { state: RootState }>(
   "snapshot/manualFetch",
   async (email, { dispatch, getState }) => {
+    const t = (key: MessageKey, params?: Record<string, string | number>) =>
+      translateFor(getState().snapshot.snap?.locale, key, params);
     const key = email ? `fetch:${email}` : "fetch:all";
     if (getState().ui.busy[key]) return;
     dispatch(setBusy({ key, on: true }));
-    dispatch(setStatus(email ? `Fetching quota for ${email}…` : "Fetching quota…"));
+    dispatch(
+      setStatus(email ? t("status.fetchingAccount", { email }) : t("status.fetchingQuota")),
+    );
     try {
       const r = email ? await api.fetchBackup(email) : await api.manualFetch();
       dispatch(setStatus(r.message));
@@ -131,7 +150,7 @@ export const manualFetch = createAsyncThunk<void, string | undefined, { state: R
       const raw = `${e}`;
       const prefix = email ? `NO_BACKUP ${email}: ` : null;
       const message = prefix && raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
-      dispatch(setStatus(`Fetch failed: ${message}`));
+      dispatch(setStatus(t("status.fetchFailed", { error: message })));
       const target = email ?? getState().snapshot.snap?.current_email;
       if (target && isAuthFetchFailure(message)) {
         dispatch(setFetchFailed({ email: target, reason: message }));
@@ -145,12 +164,14 @@ export const manualFetch = createAsyncThunk<void, string | undefined, { state: R
 export const fetchAllAccounts = createAsyncThunk<void, void, { state: RootState }>(
   "snapshot/fetchAll",
   async (_, { dispatch, getState }) => {
+    const t = (key: MessageKey, params?: Record<string, string | number>) =>
+      translateFor(getState().snapshot.snap?.locale, key, params);
     const KEY = "fetch:all-accounts";
     if (getState().ui.busy[KEY]) return;
     const snap = getState().snapshot.snap;
     const emails = snap ? Object.keys(snap.accounts) : [];
     if (emails.length === 0) {
-      dispatch(setStatus("No accounts to fetch."));
+      dispatch(setStatus(t("status.noAccountsToFetch")));
       return;
     }
     const current = snap?.current_email ?? null;
@@ -158,7 +179,7 @@ export const fetchAllAccounts = createAsyncThunk<void, void, { state: RootState 
       account === current ? "fetch:all" : `fetch:${account}`;
     dispatch(setBusy({ key: KEY, on: true }));
     emails.forEach((account) => dispatch(setBusy({ key: rowKeyOf(account), on: true })));
-    dispatch(setStatus(`Fetching ${emails.length} accounts…`));
+    dispatch(setStatus(t("status.fetchingCount", { count: emails.length })));
     try {
       const results = await Promise.allSettled(
         emails.map((account) =>
@@ -184,9 +205,17 @@ export const fetchAllAccounts = createAsyncThunk<void, void, { state: RootState 
       await dispatch(loadSnapshot());
       await dispatch(refreshLogs());
       if (failed.length === 0) {
-        dispatch(setStatus(`Fetched all ${fetched} account(s).`));
+        dispatch(setStatus(t("status.fetchedAll", { count: fetched })));
       } else {
-        dispatch(setStatus(`Fetched ${fetched}, ${failed.length} failed: ${failed.join("; ")}`));
+        dispatch(
+          setStatus(
+            t("status.fetchedPartial", {
+              fetched,
+              failed: failed.length,
+              errors: failed.join("; "),
+            }),
+          ),
+        );
       }
     } finally {
       emails.forEach((account) => dispatch(setBusy({ key: rowKeyOf(account), on: false })));
@@ -198,10 +227,12 @@ export const fetchAllAccounts = createAsyncThunk<void, void, { state: RootState 
 export const runConfirmAction = createAsyncThunk<void, void, { state: RootState }>(
   "snapshot/confirm",
   async (_, { getState, dispatch }) => {
+    const t = (key: MessageKey, params?: Record<string, string | number>) =>
+      translateFor(getState().snapshot.snap?.locale, key, params);
     const confirm = getState().ui.confirm;
     if (!confirm || getState().ui.busy["confirm"]) return;
     if (confirm.kind === "switch") {
-      dispatch(setStatus(`Switching to ${confirm.email}…`));
+      dispatch(setStatus(t("status.switchingTo", { email: confirm.email })));
       dispatch(setSwitchInfo(null));
     }
     dispatch(setBusy({ key: "confirm", on: true }));
@@ -219,7 +250,9 @@ export const runConfirmAction = createAsyncThunk<void, void, { state: RootState 
       await dispatch(loadSnapshot());
       await dispatch(refreshLogs());
     } catch (e) {
-      dispatch(setStatus(`Action failed: ${e}`));
+      dispatch(
+        setStatus(translateFor(getState().snapshot.snap?.locale, "status.actionFailed", { error: `${e}` })),
+      );
     } finally {
       dispatch(setConfirm(null));
       dispatch(setBusy({ key: "confirm", on: false }));
@@ -229,12 +262,18 @@ export const runConfirmAction = createAsyncThunk<void, void, { state: RootState 
 
 export const openResets = createAsyncThunk<void, string, { state: RootState }>(
   "snapshot/resets",
-  async (email, { dispatch }) => {
+  async (email, { dispatch, getState }) => {
     dispatch(setBusy({ key: `resets:${email}`, on: true }));
     try {
       dispatch(setResetsView({ email, data: await api.resets(email) }));
     } catch (e) {
-      dispatch(setStatus(`Could not load reset credits: ${e}`));
+      dispatch(
+        setStatus(
+          translateFor(getState().snapshot.snap?.locale, "status.resetCreditsFailed", {
+            error: `${e}`,
+          }),
+        ),
+      );
     } finally {
       dispatch(setBusy({ key: `resets:${email}`, on: false }));
     }
@@ -243,13 +282,15 @@ export const openResets = createAsyncThunk<void, string, { state: RootState }>(
 
 export const doExport = createAsyncThunk<void, string, { state: RootState }>(
   "snapshot/export",
-  async (path, { dispatch }) => {
+  async (path, { dispatch, getState }) => {
     dispatch(setBusy({ key: "data:export", on: true }));
     try {
       dispatch(setStatus(await api.exportData(path)));
       await dispatch(refreshLogs());
     } catch (e) {
-      dispatch(setStatus(`Export failed: ${e}`));
+      dispatch(
+        setStatus(translateFor(getState().snapshot.snap?.locale, "status.exportFailed", { error: `${e}` })),
+      );
     } finally {
       dispatch(setBusy({ key: "data:export", on: false }));
     }
@@ -258,14 +299,16 @@ export const doExport = createAsyncThunk<void, string, { state: RootState }>(
 
 export const doImport = createAsyncThunk<void, string, { state: RootState }>(
   "snapshot/import",
-  async (path, { dispatch }) => {
+  async (path, { dispatch, getState }) => {
     dispatch(setBusy({ key: "data:import", on: true }));
     try {
       dispatch(setStatus(await api.importData(path)));
       await dispatch(loadSnapshot());
       await dispatch(refreshLogs());
     } catch (e) {
-      dispatch(setStatus(`Import failed: ${e}`));
+      dispatch(
+        setStatus(translateFor(getState().snapshot.snap?.locale, "status.importFailed", { error: `${e}` })),
+      );
     } finally {
       dispatch(setBusy({ key: "data:import", on: false }));
     }
@@ -274,14 +317,20 @@ export const doImport = createAsyncThunk<void, string, { state: RootState }>(
 
 export const saveAutoFetchValue = createAsyncThunk<void, string, { state: RootState }>(
   "snapshot/autoFetch",
-  async (value, { dispatch }) => {
+  async (value, { dispatch, getState }) => {
     dispatch(setBusy({ key: "auto-fetch", on: true }));
     try {
       dispatch(setStatus(await api.saveAutoFetch(value)));
       await dispatch(loadSnapshot());
       await dispatch(refreshLogs());
     } catch (e) {
-      dispatch(setStatus(`Auto-fetch failed: ${e}`));
+      dispatch(
+        setStatus(
+          translateFor(getState().snapshot.snap?.locale, "status.autoFetchSaveFailed", {
+            error: `${e}`,
+          }),
+        ),
+      );
     } finally {
       dispatch(setBusy({ key: "auto-fetch", on: false }));
     }
@@ -317,22 +366,34 @@ export const toggleArchivedVisibility = createAsyncThunk<void, void, { state: Ro
       await api.saveShowArchived(next);
       await dispatch(loadSnapshot());
     } catch (e) {
-      dispatch(setStatus(`Toggle failed: ${e}`));
+      dispatch(
+        setStatus(translateFor(getState().snapshot.snap?.locale, "status.toggleFailed", { error: `${e}` })),
+      );
     }
   },
 );
 
 export type SettingsPatch = Partial<
-  Pick<Snapshot, "show_menu_bar" | "notifications_enabled" | "auto_check_updates">
+  Pick<
+    Snapshot,
+    "show_menu_bar" | "notifications_enabled" | "auto_check_updates" | "locale"
+  >
 >;
 
 export const saveSettings = createAsyncThunk<void, SettingsPatch, { state: RootState }>(
   "snapshot/settings",
-  async (patch, { dispatch }) => {
+  async (patch, { dispatch, getState }) => {
+    const t = (key: MessageKey, params?: Record<string, string | number>) =>
+      translateFor(getState().snapshot.snap?.locale, key, params);
     dispatch(setBusy({ key: "settings", on: true }));
     try {
       if (patch.show_menu_bar !== undefined) {
-        dispatch(setStatus(await api.saveShowMenuBar(patch.show_menu_bar)));
+        await api.saveShowMenuBar(patch.show_menu_bar);
+        dispatch(
+          setStatus(
+            patch.show_menu_bar ? t("status.menuBarShown") : t("status.menuBarHidden"),
+          ),
+        );
       }
       if (patch.notifications_enabled !== undefined) {
         await api.saveNotificationsEnabled(patch.notifications_enabled);
@@ -340,8 +401,11 @@ export const saveSettings = createAsyncThunk<void, SettingsPatch, { state: RootS
       if (patch.auto_check_updates !== undefined) {
         await api.saveAutoCheckUpdates(patch.auto_check_updates);
       }
+      if (patch.locale !== undefined) {
+        await api.saveLocale(patch.locale);
+      }
     } catch (e) {
-      dispatch(setStatus(`Settings update failed: ${e}`));
+      dispatch(setStatus(t("status.settingsFailed", { error: `${e}` })));
     } finally {
       await dispatch(loadSnapshot());
       dispatch(setBusy({ key: "settings", on: false }));
@@ -351,13 +415,15 @@ export const saveSettings = createAsyncThunk<void, SettingsPatch, { state: RootS
 
 export const logout = createAsyncThunk<void, void, { state: RootState }>(
   "snapshot/logout",
-  async (_, { dispatch }) => {
+  async (_, { dispatch, getState }) => {
     try {
       dispatch(setStatus(await api.logout()));
       await dispatch(loadSnapshot());
       await dispatch(refreshLogs());
     } catch (e) {
-      dispatch(setStatus(`Logout failed: ${e}`));
+      dispatch(
+        setStatus(translateFor(getState().snapshot.snap?.locale, "status.logoutFailed", { error: `${e}` })),
+      );
     }
   },
 );

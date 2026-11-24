@@ -28,14 +28,7 @@ static SUPPRESS_NEXT_CLICK: AtomicBool = AtomicBool::new(false);
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     create_popover(app)?;
 
-    let menu = Menu::new(app)?;
-    menu.append(
-        &MenuItemBuilder::with_id(OPEN_ITEM_ID, "Open Codex Monitor")
-            .accelerator("CmdOrCtrl+O")
-            .build(app)?,
-    )?;
-    menu.append(&PredefinedMenuItem::separator(app)?)?;
-    menu.append(&MenuItemBuilder::with_id(QUIT_ITEM_ID, "Quit Codex Monitor").build(app)?)?;
+    let menu = build_menu(app, current_locale(app))?;
 
     let builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Codex Monitor")
@@ -55,6 +48,46 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 
     builder.build(app)?;
     Ok(())
+}
+
+fn current_locale(app: &AppHandle) -> &'static str {
+    app.state::<crate::commands::AppState>()
+        .inner
+        .lock()
+        .map(|state| crate::state::resolved_locale(&state.locale))
+        .unwrap_or("en")
+}
+
+fn menu_labels(locale: &str) -> (&'static str, &'static str) {
+    match locale {
+        "zh-CN" => ("打开 Codex Monitor", "退出 Codex Monitor"),
+        "zh-TW" => ("開啟 Codex Monitor", "結束 Codex Monitor"),
+        "ja" => ("Codex Monitor を開く", "Codex Monitor を終了"),
+        _ => ("Open Codex Monitor", "Quit Codex Monitor"),
+    }
+}
+
+fn build_menu<R: Runtime>(app: &AppHandle<R>, locale: &str) -> tauri::Result<Menu<R>> {
+    let (open_label, quit_label) = menu_labels(locale);
+    let menu = Menu::new(app)?;
+    menu.append(
+        &MenuItemBuilder::with_id(OPEN_ITEM_ID, open_label)
+            .accelerator("CmdOrCtrl+O")
+            .build(app)?,
+    )?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItemBuilder::with_id(QUIT_ITEM_ID, quit_label).build(app)?)?;
+    Ok(menu)
+}
+
+/// Relabel the native tray menu after the interface language changes.
+pub fn set_locale(app: &AppHandle, locale: &str) -> Result<(), String> {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return Err("Menu bar item is unavailable.".into());
+    };
+    let menu = build_menu(app, locale).map_err(|e| format!("Tray menu update failed: {e}"))?;
+    tray.set_menu(Some(menu))
+        .map_err(|e| format!("Tray menu update failed: {e}"))
 }
 
 /// Show or hide the menu-bar item. Hiding also dismisses the popover so no
@@ -369,6 +402,7 @@ mod tests {
             show_menu_bar: true,
             notifications_enabled: true,
             auto_check_updates: true,
+            locale: "system".into(),
             auth_file_exists: true,
             backup_emails: vec![],
             app_version: "test".into(),

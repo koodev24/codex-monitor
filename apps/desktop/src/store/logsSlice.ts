@@ -1,4 +1,5 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
+import { translateFor } from "../i18n/messages";
 import { api } from "../lib/tauri";
 import { setBusy, setStatus } from "./uiSlice";
 import type { RootState } from "./store";
@@ -19,7 +20,13 @@ export const refreshLogs = createAsyncThunk<void, void, { state: RootState }>(
       const entries = await api.logs();
       dispatch(setEntries(entries));
     } catch (e) {
-      dispatch(setStatus(`Could not load logs: ${e}`));
+      dispatch(
+        setStatus(
+          translateFor(getState().snapshot.snap?.locale, "status.logsLoadFailed", {
+            error: `${e}`,
+          }),
+        ),
+      );
     }
   },
 );
@@ -41,13 +48,19 @@ export const toggleLogs = createAsyncThunk<void, void, { state: RootState }>(
 
 export const clearLogs = createAsyncThunk<void, void, { state: RootState }>(
   "logs/clear",
-  async (_, { dispatch }) => {
+  async (_, { dispatch, getState }) => {
     dispatch(setBusy({ key: "logs:clear", on: true }));
     try {
       await api.clearLogs();
       dispatch(setEntries([]));
     } catch (e) {
-      dispatch(setStatus(`Clear logs failed: ${e}`));
+      dispatch(
+        setStatus(
+          translateFor(getState().snapshot.snap?.locale, "status.clearLogsFailed", {
+            error: `${e}`,
+          }),
+        ),
+      );
     } finally {
       dispatch(setBusy({ key: "logs:clear", on: false }));
     }

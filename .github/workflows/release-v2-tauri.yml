@@ -1,28 +1,66 @@
 name: Release v2 (Tauri)
 
-# v2 line ships on v2* tags (e.g. v2.0.0). The legacy workflow only listens to
-# v1* tags, so the two lines never race. No branch-push triggers: releases are
-# cut by pushing a tag, so everyday pushes no longer burn 3 matrix runners.
+# Releases are cut by pushing a v2* tag. The job sequence keeps the release
+# draft until every platform has uploaded, then normalizes the asset names,
+# regenerates latest.json, and publishes exactly once.
 on:
   push:
     tags:
       - 'v2*'
-  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - name: Create draft release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+            if [ "$draft" != "true" ]; then
+              echo "::error::Release $tag is already published. Cut a new version instead of mutating it."
+              exit 1
+            fi
+            echo "Draft release $tag already exists."
+          else
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --title "Codex Monitor ${tag#v}" \
+              --notes "Release notes are generated when every build finishes."
+          fi
+          echo "release_id=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
-            args: ''
+            rust_target: aarch64-apple-darwin
+            args: '--target aarch64-apple-darwin'
+          - os: macos-latest
+            rust_target: x86_64-apple-darwin
+            args: '--target x86_64-apple-darwin'
           - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
             args: ''
           - os: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
             args: ''
 
     runs-on: ${{ matrix.os }}
@@ -42,7 +80,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ startsWith(matrix.os, 'macos') && matrix.rust_target || '' }}
 
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -51,7 +89,6 @@ jobs:
           sudo apt-get install -y -o Acquire::Retries=5 libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Resolve App Version from tag
-        if: startsWith(github.ref, 'refs/tags/v2')
         working-directory: apps/desktop
         run: node ../../scripts/set-version.mjs "${{ github.ref_name }}"
 
@@ -71,7 +108,7 @@ jobs:
           cargo test
           cargo clippy --all-targets -- -D warnings
 
-      - name: Build Tauri App
+      - name: Build and upload bundle
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,33 +116,59 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: 'CodexMonitor __VERSION__'
-          releaseBody: 'See the assets below to download the latest version.'
-          # Branch builds must stay drafts: a published branch release would
-          # steal "latest" (and its latest.json) away from real v2 releases.
-          releaseDraft: ${{ !startsWith(github.ref, 'refs/tags/') }}
-          prerelease: false
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          includeUpdaterJson: false
           args: ${{ matrix.args }}
 
-  compat-zip:
-    # Bridge for the legacy PyInstaller updater: it looks for an asset named
-    # exactly CodexMonitor-macOS.zip holding a .app bundle in the latest
-    # release, swaps it into place, clears quarantine and reopens. Same
-    # bundle name (CodexMonitor.app), so old installs migrate to Tauri.
-    # arm64-only, matching what the legacy workflow shipped.
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/v2') }}
-    needs: build
+  finalize:
+    needs: [prepare, build]
     runs-on: macos-latest
-    permissions:
-      contents: write
     steps:
-      - name: Download macOS app archive
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Normalize assets and write updater feed
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          TAG: ${{ github.ref_name }}
+        run: node scripts/finalize-release.mjs
+
+      - name: Write checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p /tmp/compat && cd /tmp/compat
-          gh release download "${{ github.ref_name }}" --repo "${{ github.repository }}" --pattern "*aarch64*.app.tar.gz"
-          tar xzf *.app.tar.gz
-          ditto -c -k --sequesterRsrc --keepParent CodexMonitor.app CodexMonitor-macOS.zip
-          gh release upload "${{ github.ref_name }}" --repo "${{ github.repository }}" CodexMonitor-macOS.zip --clobber
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          sums="CodexMonitor-${version}-SHA256SUMS.txt"
+          mkdir -p dist
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir dist --clobber
+          cd dist
+          find . -maxdepth 1 -type f \
+            ! -name '*.sig' \
+            ! -name 'latest.json' \
+            ! -name '*SHA256SUMS.txt' \
+            -print \
+            | LC_ALL=C sort \
+            | while IFS= read -r file; do shasum -a 256 "$file"; done \
+            | sed 's|  \./|  |' > "$sums"
+          gh release upload "$GITHUB_REF_NAME" "$sums" --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          node scripts/release-notes.mjs "$GITHUB_REF_NAME" > RELEASE_NOTES.md
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --title "Codex Monitor ${GITHUB_REF_NAME#v}" \
+            --notes-file RELEASE_NOTES.md

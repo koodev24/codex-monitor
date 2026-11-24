@@ -122,6 +122,15 @@ describe("reset display", () => {
       "3d 9h 7m",
     );
   });
+
+  it("localizes countdown units", () => {
+    const now = 1700000000;
+    expect(formatResetCountdown(now + 3600, now, "zh-CN")).toBe("1小时 0分");
+    expect(formatResetCountdown(now + 3600, now, "zh-TW")).toBe("1小時 0分");
+    expect(formatResetCountdown(now + 3600, now, "ja")).toBe("1時間 0分");
+    expect(countdownText(-5, "ja")).toBe("期限切れ");
+    expect(formatResetDisplay(now + 3 * 86400, now, "zh-CN")).toContain("3天");
+  });
 });
 
 describe("human reset stamp", () => {

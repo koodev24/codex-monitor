@@ -1,4 +1,6 @@
-# Codex Account Monitor
+# Codex Monitor
+
+English | [简体中文](docs/i18n/README.zh-CN.md) | [繁體中文](docs/i18n/README.zh-TW.md) | [日本語](docs/i18n/README.ja.md)
 
 [![GitHub release](https://img.shields.io/github/v/release/koodev24/codex-monitor)](https://github.com/koodev24/codex-monitor/releases/latest)
 [![Release build](https://img.shields.io/github/actions/workflow/status/koodev24/codex-monitor/release-v2-tauri.yml?label=release%20build)](https://github.com/koodev24/codex-monitor/actions)
@@ -6,47 +8,69 @@
 ![Windows](https://img.shields.io/badge/Windows-supported-blue)
 ![Linux](https://img.shields.io/badge/Linux-supported-blue)
 
-A native desktop app to monitor Codex API usage and quotas across all your ChatGPT accounts — 5-hour and weekly windows, reset countdowns, per-account reset credits, automatic fetching, and one-click updates.
+A native desktop app for monitoring Codex API usage across your ChatGPT accounts: 5-hour and weekly quotas, reset countdowns, per-account reset credits, automatic fetching, and signed in-app updates.
 
 ## Download
 
-Grab the latest release for your OS from the [Releases page](https://github.com/koodev24/codex-monitor/releases/latest):
+Get the latest build from the [Releases page](https://github.com/koodev24/codex-monitor/releases/latest). Release asset names are the same on every platform:
 
-| OS | File |
-| --- | --- |
-| macOS (Apple Silicon) | `CodexMonitor_2.x.x_aarch64.dmg` |
-| Windows (x64) | `CodexMonitor_2.x.x_x64_en-US.msi` |
-| Linux | `.AppImage`, `.deb`, or `.rpm` |
+| OS | Architecture | File |
+| --- | --- | --- |
+| macOS | Apple Silicon | `CodexMonitor-<version>-macos-arm64.dmg` |
+| macOS | Intel | `CodexMonitor-<version>-macos-x64.dmg` |
+| Windows | x64 | `CodexMonitor-<version>-windows-x64-setup.exe` |
+| Windows | x64 | `CodexMonitor-<version>-windows-x64.msi` |
+| Linux | x64 | `CodexMonitor-<version>-linux-x64.AppImage` |
+| Linux | x64 | `CodexMonitor-<version>-linux-x64.deb` |
+| Linux | x64 | `CodexMonitor-<version>-linux-x64.rpm` |
+
+Each release also includes:
+
+- `latest.json` — the updater manifest the app reads; it lists the signed updater artifact for each platform. Its name is fixed by the updater endpoint, so it intentionally has no version in the filename. Do not edit or republish it by hand.
+- `CodexMonitor-<version>-SHA256SUMS.txt` — checksums for the downloadable artifacts.
+- `CodexMonitor-<version>-macos-*.app.tar.gz` and `.sig` files — updater payloads and signatures. Normal macOS installs use the DMG.
+
+Verify a download with the checksum file:
+
+```bash
+shasum -a 256 -c CodexMonitor-<version>-SHA256SUMS.txt
+```
 
 ### macOS first launch
 
-The app is unsigned, so macOS will refuse to open it on first launch. Either right-click the app and choose **Open**, or clear the quarantine flag once:
+The app is unsigned, so macOS blocks it on first launch. Right-click the app and choose **Open**, or clear the quarantine flag once:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/CodexMonitor.app
 open /Applications/CodexMonitor.app
 ```
 
-For the smoothest future updates, keep the app in `~/Applications` — the in-app updater replaces it in place.
+Keep the app in `/Applications` or `~/Applications`. The in-app updater replaces the bundle in place.
 
-### A note on first launch
+### Migrating from the v1 Python app
 
-When you open the app for the first time, macOS asks you to confirm — that's just macOS getting to know a new app. Right-click it, choose **Open**, and you're set for good, updates included.
+v2.6.0 stops publishing the `CodexMonitor-macOS.zip` bridge that the old Python updater relied on. If you still run v1, migrate manually:
 
-### Migrating from the old Python app (v1.x)
-
-If you still run the original Python build, just use its built-in updater: v2 releases ship a compatibility bundle, so the old app downloads it, swaps itself out, and reopens as the new Tauri app — accounts, history, and settings carry over automatically.
+1. Quit the old app.
+2. Download the macOS DMG for your Mac (Apple Silicon or Intel) from the latest release.
+3. Open the DMG and move **CodexMonitor.app** to `/Applications` or `~/Applications`.
+4. Launch the new app. On first start it imports saved accounts and usage history from the old data directory when present; the old files are only read, never deleted.
+5. If accounts are missing, use **Add account** to sign in or import a saved `auth.json`. You can remove the old Python app afterwards.
 
 ## Features
 
-- **Multi-account quotas** — remaining quota and reset countdowns for both the 5-hour and weekly windows, per account.
+- **Multi-account quotas** — remaining quota and reset countdowns for the 5-hour and weekly windows, per account.
 - **Reset credits** — per-account ledger with expiry and remaining time.
-- **Fetching** — one-click quota fetch per account or all at once, plus configurable auto-fetch intervals.
-- **Account management** — add accounts via Codex login, archive the ones you don't use, and switch the active Codex account safely: Codex closes, fresh tokens are preserved, the selected session is written, and Codex reopens automatically.
-- **Menu-bar popover (macOS)** — the tray title shows the active account's 5-hour and weekly quota; click it for a compact account list, one-step switching, and dashboard access.
-- **Live logs** — a collapsible activity panel with one-click clear and status copy. It has a fixed height and cannot be resized.
-- **Settings** — menu bar visibility, desktop notifications, and automatic update checks, saved immediately.
-- **In-app updates** — signed update feed with manual check and automatic background checks.
+- **Fetching** — one-click quota fetch per account or for all accounts, plus configurable auto-fetch intervals.
+- **Account management** — add accounts through Codex login, archive unused ones, and switch the active account safely: Codex closes, fresh tokens are preserved, the selected session is written, and Codex reopens automatically.
+- **Menu-bar popover (macOS)** — the menu-bar title shows the active account's 5-hour and weekly quota; click it for a compact account list, one-step switching, and dashboard access.
+- **Live logs** — a fixed-height activity panel with one-click copy and clear.
+- **Settings** — interface language, menu-bar visibility, desktop notifications, and automatic update checks, saved immediately.
+- **In-app updates** — signed update feed with manual checks and background checks every 6 hours.
+
+## Languages
+
+The interface ships in English, Simplified Chinese, Traditional Chinese, and Japanese. Choose a language in **Settings → Language**, or keep **System** to follow the OS language. The native menu-bar menu and the dashboard use the same setting, and status messages from the app follow it too. Backend diagnostic logs remain in English so they stay useful in bug reports.
 
 ## Usage
 
@@ -54,13 +78,13 @@ If you still run the original Python build, just use its built-in updater: v2 re
 2. Click **Refresh quota** (or wait for auto-fetch) to pull usage for the active account, or **Fetch all accounts** for every backup.
 3. Hover any toolbar button for what it does; click the **eye** to toggle archived accounts, the **sun/moon** for light/dark theme, and the **gear** for settings.
 4. Click **Activity** at the bottom to expand or collapse logs. Switching accounts asks once, then handles Codex close, credential switch, and reopen as a single action.
-5. On macOS, closing the window keeps Codex Monitor running in the menu bar. Use the tray popover to reopen the dashboard, or **Quit Codex Monitor** from its menu to exit. If you turn off **Show menu bar item** in Settings, closing the window quits the app instead.
+5. On macOS, closing the window keeps Codex Monitor running in the menu bar. Use the tray popover to reopen the dashboard, or **Quit** from its menu to exit. If you turn off **Show menu bar item** in Settings, closing the window quits the app instead.
 
 ## How updating works
 
-- The **cloud-download** button checks a signed update feed (`latest.json`); if an update is found it downloads, verifies the signature, installs, and relaunches.
-- The app also checks silently on startup and every 6 hours — you'll get a status message, never a popup.
-- Old v1 Python installs follow the same `latest` release through their own updater and migrate in place (see above).
+- The **cloud-download** button checks `latest.json` from the latest release. If an update exists, it downloads the artifact for your OS and architecture, verifies the signature, installs, and relaunches.
+- Checks also run silently at startup and every 6 hours. Results appear in the status bar, never in a popup.
+- `latest.json` is regenerated by CI after every platform build finishes, so it always points at assets from the same release. That is why published releases are never moved or edited by hand.
 
 ## Development
 
@@ -76,6 +100,7 @@ Useful commands (from `apps/desktop` unless noted):
 
 ```bash
 npm run build          # frontend typecheck (tsc) + Vite build
+npm test               # frontend unit tests
 npm run tauri dev      # full app with hot reload
 npm run tauri build    # local release bundle (never committed)
 cargo test             # Rust backend tests (apps/desktop/src-tauri)
@@ -86,42 +111,26 @@ Project layout:
 
 ```text
 apps/desktop/
-  src/                 # React frontend (components, store, formatting)
+  src/                 # React frontend (components, store, i18n, formatting)
   src-tauri/           # Rust backend (API client, storage, watcher, updater)
 scripts/
-  set-version.mjs      # syncs version from release tags (CI)
+  set-version.mjs      # syncs version from release tags for CI
+  finalize-release.mjs # normalizes assets and writes latest.json
+  release-notes.mjs    # extracts release notes from CHANGELOG.md
 ```
 
 ## Releasing
 
-Push a `v2*` tag and CI builds every platform, signs the updater artifacts, publishes the `latest.json` feed, and attaches the legacy-migration bundle:
+Push a `v2*` tag. CI creates a draft release, builds macOS arm64, macOS x64, Windows x64, and Linux x64, then normalizes every asset name, regenerates `latest.json`, writes `CodexMonitor-<version>-SHA256SUMS.txt`, and publishes the release once:
 
 ```bash
-git tag v2.3.0 && git push origin v2.3.0
+git tag v2.6.0
+git push origin v2.6.0
 ```
 
-Rules that keep the updater feed healthy:
+Release rules:
 
-- **Only cut `v2*` tags.** A legacy `v1*` release would become "latest" without an update manifest and silently break in-app updates for everyone.
-- Branch builds publish as **drafts** so dev builds can never steal the "latest" slot.
-- Locally built bundles are never committed (see `.gitignore`) — releases come from CI only.
-
-## Auth file notes
-
-The app watches `~/.codex/auth.json` and expects the Codex auth file to look like this:
-
-```json
-{
-  "auth_mode": "chatgpt",
-  "OPENAI_API_KEY": null,
-  "tokens": {
-    "id_token": "eyJ....",
-    "access_token": "eyJ....",
-    "refresh_token": "rt_...",
-    "account_id": "uuid"
-  },
-  "last_refresh": "2026-04-24T15:17:00.949966Z"
-}
-```
-
-`access_token` is used for quota fetches. `last_refresh` and token rotation are also tracked so the app can surface when Codex silently refreshes auth in the background.
+- **Only cut `v2*` tags.** This workflow only runs for `v2*`; v1 releases are no longer produced.
+- Published releases are never moved or overwritten. Cut a new patch version instead.
+- Locally built bundles are never committed (see `.gitignore`); releases come from CI only.
+- The release body is generated from `CHANGELOG.md`, so add the version section before tagging.

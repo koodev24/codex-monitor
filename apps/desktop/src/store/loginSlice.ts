@@ -1,5 +1,6 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { translateFor } from "../i18n/messages";
 import { api } from "../lib/tauri";
 import { setBusy, setStatus } from "./uiSlice";
 import type { RootState } from "./store";
@@ -26,11 +27,15 @@ const initialState: LoginState = {
 
 export const openLoginUrlOrDefault = createAsyncThunk<void, string, { state: RootState }>(
   "login/openUrl",
-  async (url, { dispatch }) => {
+  async (url, { dispatch, getState }) => {
     try {
       dispatch(setStatus(await api.openLoginUrl(url)));
     } catch {
-      dispatch(setStatus("Opened login page in the default browser."));
+      dispatch(
+        setStatus(
+          translateFor(getState().snapshot.snap?.locale, "status.openLoginFallback"),
+        ),
+      );
       void openUrl(url).catch(() => undefined);
     }
   },
@@ -38,12 +43,13 @@ export const openLoginUrlOrDefault = createAsyncThunk<void, string, { state: Roo
 
 export const copyLoginUrl = createAsyncThunk<void, string, { state: RootState }>(
   "login/copyUrl",
-  async (url, { dispatch }) => {
+  async (url, { dispatch, getState }) => {
+    const preference = getState().snapshot.snap?.locale;
     try {
       await navigator.clipboard.writeText(url);
-      dispatch(setStatus("Login URL copied — paste it into a private window."));
+      dispatch(setStatus(translateFor(preference, "status.loginUrlCopied")));
     } catch {
-      dispatch(setStatus("Could not copy the URL. Select it from the log above."));
+      dispatch(setStatus(translateFor(preference, "status.loginUrlCopyFailed")));
     }
   },
 );
@@ -60,7 +66,13 @@ export const startLogin = createAsyncThunk<void, void, { state: RootState }>(
       dispatch(setStatus(msg));
     } catch (e) {
       dispatch(setError(`${e}`));
-      dispatch(setStatus(`Could not start sign-in: ${e}`));
+      dispatch(
+        setStatus(
+          translateFor(getState().snapshot.snap?.locale, "status.signInStartFailed", {
+            error: `${e}`,
+          }),
+        ),
+      );
     } finally {
       dispatch(setStarting(false));
     }
@@ -69,12 +81,18 @@ export const startLogin = createAsyncThunk<void, void, { state: RootState }>(
 
 export const cancelLogin = createAsyncThunk<void, void, { state: RootState }>(
   "login/cancel",
-  async (_, { dispatch }) => {
+  async (_, { dispatch, getState }) => {
     dispatch(setBusy({ key: "login:cancel", on: true }));
     try {
       await api.loginCancel();
     } catch (e) {
-      dispatch(setStatus(`Cancel failed: ${e}`));
+      dispatch(
+        setStatus(
+          translateFor(getState().snapshot.snap?.locale, "status.cancelFailed", {
+            error: `${e}`,
+          }),
+        ),
+      );
     } finally {
       dispatch(setBusy({ key: "login:cancel", on: false }));
     }

@@ -15,6 +15,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useI18n } from "@/i18n";
 import { api } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
@@ -43,6 +44,7 @@ function Spinner() {
 
 export function AddAccountDialog() {
   const dispatch = useAppDispatch();
+  const { t } = useI18n();
   const isOpen = useAppSelector((s) => s.login.open);
   const starting = useAppSelector((s) => s.login.starting);
   const url = useAppSelector((s) => s.login.url);
@@ -108,7 +110,7 @@ export function AddAccountDialog() {
       if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
       copiedTimer.current = window.setTimeout(() => setCopied(false), 1800);
     } catch {
-      dispatch(setLoginError("Clipboard unavailable — select the link and copy it manually."));
+      dispatch(setLoginError(t("add.clipboardUnavailable")));
     }
   }
 
@@ -116,8 +118,8 @@ export function AddAccountDialog() {
     setImportError(null);
     const selected = await open({
       multiple: false,
-      title: "Select a Codex auth.json file",
-      filters: [{ name: "Codex auth file", extensions: ["json"] }],
+      title: t("add.dialogTitle"),
+      filters: [{ name: t("add.filterName"), extensions: ["json"] }],
     });
     if (typeof selected === "string") setPath(selected);
   }
@@ -160,22 +162,19 @@ export function AddAccountDialog() {
     >
       <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-[30rem] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Add account</DialogTitle>
-          <DialogDescription>
-            Sign in with ChatGPT or import a saved Codex session. Adding never
-            switches your active account or restarts Codex.
-          </DialogDescription>
+          <DialogTitle>{t("add.title")}</DialogTitle>
+          <DialogDescription>{t("add.description")}</DialogDescription>
         </DialogHeader>
 
         <div
           role="tablist"
-          aria-label="How to add an account"
+          aria-label={t("add.tabsAria")}
           className="grid grid-cols-2 gap-1 rounded-xl bg-muted p-1"
         >
           {(
             [
-              ["login", "ChatGPT login", LogIn],
-              ["import", "Import file", FileJson],
+              ["login", t("add.tabLogin"), LogIn],
+              ["import", t("add.tabImport"), FileJson],
             ] as const
           ).map(([value, label, Icon]) => (
             <button
@@ -205,10 +204,9 @@ export function AddAccountDialog() {
                   <Spinner />
                 </span>
                 <div>
-                  <p className="text-sm font-medium">Waiting for sign-in…</p>
+                  <p className="text-sm font-medium">{t("add.waitingTitle")}</p>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    Finish the ChatGPT login in your browser. This window updates
-                    by itself.
+                    {t("add.waitingDetail")}
                   </p>
                 </div>
                 <div className="flex w-full min-w-0 items-center gap-1 overflow-hidden rounded-lg border bg-muted/40 p-1 pl-2.5">
@@ -227,7 +225,7 @@ export function AddAccountDialog() {
                   </Tooltip>
                   <Button size="xs" variant="ghost" onClick={() => void copyUrl()}>
                     {copied ? <Check /> : null}
-                    {copied ? "Copied" : "Copy"}
+                    {copied ? t("action.copied") : t("action.copy")}
                   </Button>
                   <Button
                     size="xs"
@@ -235,12 +233,11 @@ export function AddAccountDialog() {
                     onClick={() => void dispatch(openLoginUrlOrDefault(url))}
                   >
                     <ExternalLink />
-                    Open
+                    {t("action.open")}
                   </Button>
                 </div>
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
-                  “Open” uses a private browser window when one is available, so
-                  you can pick a different ChatGPT account.
+                  {t("add.privateHint")}
                 </p>
               </div>
             ) : loginError ? (
@@ -252,10 +249,9 @@ export function AddAccountDialog() {
                 <span className="grid size-10 place-items-center rounded-full bg-muted text-muted-foreground">
                   <LogIn className="size-4.5" aria-hidden />
                 </span>
-                <p className="text-sm font-medium">Sign in with ChatGPT</p>
+                <p className="text-sm font-medium">{t("add.signInTitle")}</p>
                 <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
-                  Starts the official Codex browser login and saves the session.
-                  Your active account stays active.
+                  {t("add.signInDetail")}
                 </p>
               </div>
             )}
@@ -263,7 +259,7 @@ export function AddAccountDialog() {
         ) : (
           <div role="tabpanel" className="min-h-40 min-w-0">
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium">auth.json file</span>
+              <span className="text-xs font-medium">{t("add.authFileLabel")}</span>
               <button
                 type="button"
                 onClick={() => void pickFile()}
@@ -283,22 +279,20 @@ export function AddAccountDialog() {
                   </Tooltip>
                 ) : (
                   <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                    Choose a Codex auth.json file…
+                    {t("add.chooseFile")}
                   </span>
                 )}
                 <span className="shrink-0 text-[11px] font-medium text-muted-foreground group-hover:text-foreground">
-                  Browse
+                  {t("action.browse")}
                 </span>
               </button>
               <p className="text-[11px] leading-relaxed text-muted-foreground">
-                Exported from another machine or a backup? The session is filed
-                under the account inside the file. Only ChatGPT sign-ins can be
-                imported.
+                {t("add.importHint")}
               </p>
             </div>
             <div className="mt-4 flex flex-col gap-1.5">
               <label htmlFor="pasted-auth" className="text-xs font-medium">
-                or paste auth.json
+                {t("add.pasteLabel")}
               </label>
               <textarea
                 id="pasted-auth"
@@ -313,9 +307,7 @@ export function AddAccountDialog() {
                 className="min-h-20 w-full resize-y rounded-lg border bg-background px-2.5 py-2 font-mono text-[11px] leading-relaxed outline-none placeholder:text-muted-foreground/60 focus-visible:ring-2 focus-visible:ring-ring/50"
               />
               <p className="text-[11px] leading-relaxed text-muted-foreground">
-                {path
-                  ? "The selected file is imported instead of the pasted text."
-                  : "Contents stay on this Mac and are never written to the activity log."}
+                {path ? t("add.pasteHintSelected") : t("add.pasteHint")}
               </p>
             </div>
             {importError && (
@@ -328,12 +320,16 @@ export function AddAccountDialog() {
 
         <DialogFooter className="flex-wrap gap-2">
           <Button variant="outline" onClick={close}>
-            {waiting ? "Cancel sign-in" : "Cancel"}
+            {waiting ? t("add.cancelSignIn") : t("action.cancel")}
           </Button>
           {tab === "login" ? (
             <Button onClick={start} disabled={busy || waiting}>
               {starting ? <Spinner /> : <LogIn />}
-              {starting ? "Starting…" : loginError ? "Try again" : "Start sign-in"}
+              {starting
+                ? t("add.starting")
+                : loginError
+                  ? t("action.tryAgain")
+                  : t("add.startSignIn")}
             </Button>
           ) : (
             <Button
@@ -342,12 +338,12 @@ export function AddAccountDialog() {
             >
               {importing ? <Spinner /> : <FileJson />}
               {importing
-                ? "Importing…"
+                ? t("add.importing")
                 : path
-                  ? "Import file"
+                  ? t("add.importFile")
                   : pasted.trim()
-                    ? "Import pasted"
-                    : "Import account"}
+                    ? t("add.importPasted")
+                    : t("add.importAccount")}
             </Button>
           )}
         </DialogFooter>
