@@ -162,6 +162,12 @@ async function main() {
     };
   }
 
+  for (const installer of installers) {
+    if (!finalByName.has(installer)) {
+      throw new Error(`finalize-release: missing installer ${installer}`);
+    }
+  }
+
   const latest = {
     version,
     notes: releaseNotes(tag),
@@ -189,8 +195,13 @@ async function main() {
 
   // Remove bundle leftovers such as an unversioned compatibility zip or
   // arch-less updater archive. Only canonical assets stay public.
+  const installers = [
+    `CodexMonitor-${version}-macos-arm64.dmg`,
+    `CodexMonitor-${version}-macos-x64.dmg`,
+  ];
   const expected = new Set([
     "latest.json",
+    ...installers,
     ...Object.values(platforms),
     ...Object.values(platforms).map((name) => `${name}.sig`),
   ]);
